@@ -48,23 +48,132 @@ function getSymmetricCells(r, c, rows, cols) {
   return Array.from(set);
 }
 
-function applySymmetricBlanks(edgesByCell, rows, cols, rand, percent) {
-  const target = Math.max(1, Math.round(rows * cols * percent));
+function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, clusterCount) {
+  if (targetCells <= 0) return;
+  const groupTarget = Math.max(1, Math.round(targetCells / 4));
+  const gridRows = Math.ceil(rows / 2);
+  const gridCols = Math.ceil(cols / 2);
   const groups = [];
-  for (let r = 0; r < Math.ceil(rows / 2); r += 1) {
-    for (let c = 0; c < Math.ceil(cols / 2); c += 1) {
-      groups.push(getSymmetricCells(r, c, rows, cols));
+  const indexGrid = Array.from({ length: gridRows }, () => Array(gridCols).fill(-1));
+  for (let r = 0; r < gridRows; r += 1) {
+    for (let c = 0; c < gridCols; c += 1) {
+      const cells = getSymmetricCells(r, c, rows, cols);
+      if (cells.length !== 4) {
+        continue;
+      }
+      const index = groups.length;
+      groups.push({ r, c, cells });
+      indexGrid[r][c] = index;
     }
   }
-  for (let i = 0; i < groups.length; i += 1) {
-    const swapIndex = i + Math.floor(rand() * (groups.length - i));
-    [groups[i], groups[swapIndex]] = [groups[swapIndex], groups[i]];
-  }
 
-  const blanks = new Set();
-  for (const group of groups) {
-    if (blanks.size >= target) break;
-    group.forEach((key) => blanks.add(key));
+  const selectGroupsInClusters = (clusterCountValue) => {
+    const chosen = new Set();
+    const clusters = [];
+    const clusterTotal = Math.max(1, clusterCountValue || 1);
+    for (let i = 0; i < clusterTotal; i += 1) {
+      let seedIndex = Math.floor(rand() * groups.length);
+      let attempts = 0;
+      while (chosen.has(seedIndex) && attempts < 20) {
+        seedIndex = Math.floor(rand() * groups.length);
+        attempts += 1;
+      }
+      chosen.add(seedIndex);
+      clusters.push([seedIndex]);
+    }
+
+    const neighborIndices = (group) => {
+      const dirs = [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ];
+      const list = [];
+      dirs.forEach(([dr, dc]) => {
+        const nr = group.r + dr;
+        const nc = group.c + dc;
+        if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols) {
+          const idx = indexGrid[nr][nc];
+          if (idx >= 0) list.push(idx);
+        }
+      });
+      return list;
+    };
+
+    while (chosen.size < groupTarget) {
+      const clusterIndex = Math.floor(rand() * clusters.length);
+      const cluster = clusters[clusterIndex];
+      const anchorIndex = cluster[Math.floor(rand() * cluster.length)];
+      const neighbors = neighborIndices(groups[anchorIndex]).filter((idx) => !chosen.has(idx));
+      if (neighbors.length > 0) {
+        const nextIndex = neighbors[Math.floor(rand() * neighbors.length)];
+        chosen.add(nextIndex);
+        cluster.push(nextIndex);
+      } else {
+        let nextIndex = Math.floor(rand() * groups.length);
+        let attempts = 0;
+        while (chosen.has(nextIndex) && attempts < 50) {
+          nextIndex = Math.floor(rand() * groups.length);
+          attempts += 1;
+        }
+        if (!chosen.has(nextIndex)) {
+          chosen.add(nextIndex);
+          cluster.push(nextIndex);
+        } else {
+          break;
+        }
+      }
+    }
+    return Array.from(chosen).map((idx) => groups[idx].cells);
+  };
+
+  const isConnected = (blankSet) => {
+    const total = rows * cols - blankSet.size;
+    if (total <= 0) return true;
+    let start = null;
+    for (let r = 0; r < rows && !start; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const key = `${r}-${c}`;
+        if (!blankSet.has(key)) {
+          start = [r, c];
+          break;
+        }
+      }
+    }
+    if (!start) return true;
+    const queue = [start];
+    const visited = new Set([`${start[0]}-${start[1]}`]);
+    while (queue.length) {
+      const [r, c] = queue.shift();
+      const neighbors = [
+        [r + 1, c],
+        [r - 1, c],
+        [r, c + 1],
+        [r, c - 1]
+      ];
+      neighbors.forEach(([nr, nc]) => {
+        if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return;
+        const key = `${nr}-${nc}`;
+        if (blankSet.has(key) || visited.has(key)) return;
+        visited.add(key);
+        queue.push([nr, nc]);
+      });
+    }
+    return visited.size === total;
+  };
+
+  let blanks = new Set();
+  let attempts = 0;
+  while (attempts < 40) {
+    blanks = new Set();
+    const grouped = selectGroupsInClusters(clusterCount);
+    for (const group of grouped) {
+      if (blanks.size >= groupTarget * 4) break;
+      group.forEach((key) => blanks.add(key));
+    }
+    if (blanks.size === groupTarget * 4 && isConnected(blanks)) break;
+    attempts += 1;
   }
 
   blanks.forEach((key) => {
@@ -86,11 +195,20 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, percent) {
   });
 }
 
-function makeBoard(seedText) {
+function makeBoard(seedText, difficulty = "medium") {
   const seed = hashStringToInt(seedText || "zen");
   const rand = mulberry32(seed);
   const edgesByCell = generateSolvedEdges(ROWS, COLS, rand);
-  applySymmetricBlanks(edgesByCell, ROWS, COLS, rand, 0.05);
+  const difficultyConfig = {
+    easy: { min: 13, max: 20, clusters: 3 },
+    medium: { min: 4, max: 12, clusters: 2 },
+    hard: { min: 0, max: 0, clusters: 0 }
+  };
+  const config = difficultyConfig[difficulty] || difficultyConfig.medium;
+  if (config.max > 0) {
+    const targetCount = config.min + Math.floor(rand() * (config.max - config.min + 1));
+    applySymmetricBlanks(edgesByCell, ROWS, COLS, rand, targetCount, config.clusters);
+  }
   const tiles = [];
 
   for (let r = 0; r < ROWS; r += 1) {
@@ -825,8 +943,74 @@ function TileSVG({ type, completeDirs }) {
 }
 
 export default function App() {
+  const difficultyLevels = ["easy", "medium", "hard"];
+  const themes = [
+    {
+      name: "Tranquil Waters",
+      colors: ["#A4D7E1", "#6B9AC4", "#3B5B8C", "#1F3A5F", "#0D1B2A"]
+    },
+    {
+      name: "Serene Garden",
+      colors: ["#E3F6F5", "#B9EBC1", "#A8D8B9", "#6B8E23", "#4B5D33"]
+    },
+    {
+      name: "Soft Blush",
+      colors: ["#F7E7D9", "#E1B7A1", "#D6A4A1", "#C69C8D", "#A76D6D"]
+    },
+    {
+      name: "Misty Slate",
+      colors: ["#B7C9C7", "#A1B2B5", "#8C9A9E", "#6B7B7A", "#4A5B5D"]
+    },
+    {
+      name: "Warm Earth",
+      colors: ["#F6D6A8", "#F2B94C", "#D68A2D", "#A65E2E", "#6A3D2A"]
+    },
+    {
+      name: "Fresh Meadow",
+      colors: ["#C8E6C9", "#A5D6A7", "#81C784", "#4CAF50", "#388E3C"]
+    },
+    {
+      name: "Citrus Breeze",
+      colors: ["#F0F4C3", "#E6EE9C", "#DCE775", "#C0CA33", "#8BC34A"]
+    },
+    {
+      name: "Quiet Grey",
+      colors: ["#E0E0E0", "#BDBDBD", "#9E9E9E", "#757575", "#424242"]
+    },
+    {
+      name: "Rose Bloom",
+      colors: ["#F8BBD0", "#F48FB1", "#F06292", "#EC407A", "#D81B60"]
+    },
+    {
+      name: "Harbor Blue",
+      colors: ["#B0BEC5", "#90A4AE", "#78909C", "#607D8B", "#455A64"]
+    },
+    {
+      name: "Blue Mist",
+      colors: ["#C1C6C8", "#A7B2B5", "#8C9DAF", "#6B7B8A", "#4A5B6D"]
+    }
+  ];
+
+  const [themeIndex, setThemeIndex] = useState(() => {
+    const savedTheme = Number(localStorage.getItem("zen_theme_index"));
+    return Number.isNaN(savedTheme) ? 0 : Math.max(0, Math.min(savedTheme, themes.length - 1));
+  });
+  const [themeMode, setThemeMode] = useState(() => {
+    const savedMode = localStorage.getItem("zen_theme_mode");
+    return savedMode === "fixed" ? "fixed" : "random";
+  });
+  const [showThemePicker, setShowThemePicker] = useState(false);
+  const [randomSwatchOffset, setRandomSwatchOffset] = useState(0);
+  const initialDifficultyIndex = (() => {
+    const savedDifficulty = localStorage.getItem("zen_difficulty");
+    const idx = difficultyLevels.indexOf(savedDifficulty);
+    return idx === -1 ? 1 : idx;
+  })();
+  const [difficultyIndex, setDifficultyIndex] = useState(initialDifficultyIndex);
   const [seedText, setSeedText] = useState("zen-001");
-  const [tiles, setTiles] = useState(() => makeBoard("zen-001"));
+  const [tiles, setTiles] = useState(() =>
+    makeBoard("zen-001", difficultyLevels[initialDifficultyIndex])
+  );
   const [connectionFlashIds, setConnectionFlashIds] = useState(new Set());
   const [fxVolume, setFxVolume] = useState(1);
   const [bgVolume, setBgVolume] = useState(0.3);
@@ -840,9 +1024,52 @@ export default function App() {
   const prevCompleteBitsRef = useRef(new Map());
   const audioCtxRef = useRef(null);
   const bgAudioRef = useRef(null);
-  const bgGainRef = useRef(null);
-  const bgSourceRef = useRef(null);
   const hasInteractedRef = useRef(false);
+
+  useEffect(() => {
+    localStorage.setItem("zen_theme_index", String(themeIndex));
+  }, [themeIndex]);
+
+  useEffect(() => {
+    const theme = themes[themeIndex] || themes[0];
+    const [c1, c2, c3, c4, c5] = theme.colors;
+    const toRgba = (hex, alpha) => {
+      const normalized = hex.replace("#", "");
+      const r = parseInt(normalized.slice(0, 2), 16);
+      const g = parseInt(normalized.slice(2, 4), 16);
+      const b = parseInt(normalized.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    };
+    const blend = (hexA, hexB, amount) => {
+      const a = hexA.replace("#", "");
+      const b = hexB.replace("#", "");
+      const ar = parseInt(a.slice(0, 2), 16);
+      const ag = parseInt(a.slice(2, 4), 16);
+      const ab = parseInt(a.slice(4, 6), 16);
+      const br = parseInt(b.slice(0, 2), 16);
+      const bg = parseInt(b.slice(2, 4), 16);
+      const bb = parseInt(b.slice(4, 6), 16);
+      const mix = (v1, v2) => Math.round(v1 * (1 - amount) + v2 * amount);
+      return `rgb(${mix(ar, br)}, ${mix(ag, bg)}, ${mix(ab, bb)})`;
+    };
+    const darken = (hex, factor) => {
+      const normalized = hex.replace("#", "");
+      const r = Math.round(parseInt(normalized.slice(0, 2), 16) * factor);
+      const g = Math.round(parseInt(normalized.slice(2, 4), 16) * factor);
+      const b = Math.round(parseInt(normalized.slice(4, 6), 16) * factor);
+      return `rgb(${r}, ${g}, ${b})`;
+    };
+    const root = document.documentElement;
+    root.style.setProperty("--bg-start", c1);
+    root.style.setProperty("--bg-mid", c2);
+    root.style.setProperty("--bg-end", c3);
+    root.style.setProperty("--accent", c4);
+    root.style.setProperty("--loop", blend(c5, "#2f2a24", 0.45));
+    root.style.setProperty("--loop-soft", "rgba(255, 255, 255, 0.9)");
+    root.style.setProperty("--ink", blend(c5, "#2f2a24", 0.4));
+    root.style.setProperty("--muted", blend(c4, "#2f2a24", 0.35));
+    root.style.setProperty("--board-bg", toRgba(c1, 0.6));
+  }, [themeIndex]);
 
   const connections = useMemo(() => computeConnections(tiles), [tiles]);
   const completeDirs = useMemo(() => computeCompleteDirs(tiles, connections), [tiles, connections]);
@@ -873,6 +1100,22 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("zen_fx_volume", String(fxVolume));
   }, [fxVolume]);
+
+  useEffect(() => {
+    localStorage.setItem("zen_theme_mode", themeMode);
+  }, [themeMode]);
+
+  useEffect(() => {
+    if (themeMode !== "random") return undefined;
+    const interval = setInterval(() => {
+      setRandomSwatchOffset((prev) => (prev + 1) % themes.length);
+    }, 1100);
+    return () => clearInterval(interval);
+  }, [themeMode, themes.length]);
+
+  useEffect(() => {
+    localStorage.setItem("zen_difficulty", difficultyLevels[difficultyIndex]);
+  }, [difficultyIndex]);
 
   useEffect(() => {
     const indices = Array.from({ length: 10 }, (_, i) => i);
@@ -1128,33 +1371,25 @@ export default function App() {
     const trackIndex = bgQueue[position] ?? 0;
     setBgNowPlayingIndex(trackIndex);
     const track = audioTracks[trackIndex];
-    const audio = new Audio(track.file);
+    const trackPath = track.file.startsWith("/")
+      ? track.file.slice(1)
+      : track.file;
+    const baseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
+    const trackUrl = new URL(trackPath, baseUrl).toString();
+    const audio = new Audio(trackUrl);
     audio.loop = false;
-    audio.volume = 1;
-
-    const ctx = ensureAudioContext();
-    const source = ctx.createMediaElementSource(audio);
-    const gain = ctx.createGain();
-    gain.gain.value = Math.min(1.0, bgVolume * 0.4);
-    source.connect(gain);
-    gain.connect(ctx.destination);
+    audio.volume = Math.min(1.0, bgVolume * 0.4);
 
     audio.onended = () => playNextBg();
     audio.play().catch(() => {});
     bgAudioRef.current = audio;
-    bgSourceRef.current = source;
-    bgGainRef.current = gain;
   }
 
   function stopAmbient() {
     if (!bgAudioRef.current) return;
     bgAudioRef.current.pause();
     bgAudioRef.current.currentTime = 0;
-    if (bgSourceRef.current) bgSourceRef.current.disconnect();
-    if (bgGainRef.current) bgGainRef.current.disconnect();
     bgAudioRef.current = null;
-    bgSourceRef.current = null;
-    bgGainRef.current = null;
   }
 
   function playNextBg() {
@@ -1185,9 +1420,7 @@ export default function App() {
       startAmbient();
       return;
     }
-    if (bgGainRef.current) {
-      bgGainRef.current.gain.value = Math.min(1.0, bgVolume * 0.4);
-    }
+    bgAudioRef.current.volume = Math.min(1.0, bgVolume * 0.4);
   }, [bgVolume]);
 
   useEffect(() => {
@@ -1204,8 +1437,12 @@ export default function App() {
     [tiles]
   );
 
-  function regenerate(nextSeed) {
-    setTiles(makeBoard(nextSeed));
+  function regenerate(nextSeed, nextDifficulty = difficultyLevels[difficultyIndex]) {
+    if (themeMode === "random") {
+      const nextTheme = Math.floor(Math.random() * themes.length);
+      setThemeIndex(nextTheme);
+    }
+    setTiles(makeBoard(nextSeed, nextDifficulty));
   }
 
   function handleSeedChange(e) {
@@ -1244,120 +1481,59 @@ export default function App() {
   return (
     <div className="app">
       <header className="top-controls">
-        <div className="footer-controls">
-          <div className="footer-left">
-            <button
-              type="button"
-              className="button"
-              onClick={() => regenerate(seedText)}
-            >
-              Reset
-            </button>
-            <button
-              type="button"
-              className="button button-ghost"
-              onClick={() => {
-                const nextSeed = Math.random().toString(36).slice(2, 8);
-                setSeedText(nextSeed);
-                regenerate(nextSeed);
-              }}
-            >
-              Random
-            </button>
-          </div>
-          <div className="footer-right">
-            <button
-              type="button"
-              className="button button-ghost button-icon"
-              onClick={() => setShowAttribution(true)}
-              aria-label="Attribution"
-              title="Attribution"
-            >
-              i
-            </button>
-            <button
-              type="button"
-              className="button button-ghost button-icon"
-              onClick={() =>
-                setBgVolume((prev) => (prev === 1 ? 0 : prev === 0 ? 0.3 : prev === 0.3 ? 0.6 : 1))
-              }
-              aria-label="Background volume"
-              title="Background volume"
-            >
-              <span>BG</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
-                {bgVolume >= 0.3 ? (
-                  <path
-                    d="M15 11a2 2 0 010 2"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                ) : null}
-                {bgVolume >= 0.6 ? (
-                  <path
-                    d="M16.5 9.5a4 4 0 010 5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                ) : null}
-                {bgVolume >= 1 ? (
-                  <path
-                    d="M18 7.5a6 6 0 010 9"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                ) : null}
-              </svg>
-            </button>
-            <button
-              type="button"
-              className="button button-ghost button-icon"
-              onClick={() =>
-                setFxVolume((prev) => (prev === 1.5 ? 0 : prev === 0 ? 0.5 : prev === 0.5 ? 1.0 : 1.5))
-              }
-              aria-label="Effects volume"
-              title="Effects volume"
-            >
-              <span>FX</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
-                {fxVolume >= 0.5 ? (
-                  <path
-                    d="M15 11a2 2 0 010 2"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                ) : null}
-                {fxVolume >= 1.0 ? (
-                  <path
-                    d="M16.5 9.5a4 4 0 010 5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                ) : null}
-                {fxVolume >= 1.5 ? (
-                  <path
-                    d="M18 7.5a6 6 0 010 9"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                ) : null}
-              </svg>
-            </button>
-          </div>
+        <h1 className="app-title">zentō</h1>
+        <div className="top-actions">
+          <button
+            type="button"
+            className="button"
+            onClick={() => regenerate(seedText)}
+            aria-label="Reset level"
+            title="Reset"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M7 7a7 7 0 1 1-1.9 6.3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M5 4.5v4.8h4.8"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="button button-ghost"
+            onClick={() => {
+              const nextSeed = Math.random().toString(36).slice(2, 8);
+              setSeedText(nextSeed);
+              regenerate(nextSeed);
+            }}
+          >
+            New level
+          </button>
+          <button
+            type="button"
+            className="button button-ghost"
+            onClick={() => {
+              const nextIndex = (difficultyIndex + 1) % difficultyLevels.length;
+              setDifficultyIndex(nextIndex);
+              regenerate(seedText, difficultyLevels[nextIndex]);
+            }}
+            aria-label="Difficulty"
+            title="Difficulty"
+          >
+            {difficultyLevels[difficultyIndex].charAt(0).toUpperCase() +
+              difficultyLevels[difficultyIndex].slice(1)}
+          </button>
         </div>
       </header>
 
@@ -1385,73 +1561,226 @@ export default function App() {
         </div>
       </main>
 
-      {solved ? <p className="status-text">Complete. Breathe.</p> : null}
-      {/* Sound testing UI hidden */}
-      {showAttribution ? (
-        <div className="modal-backdrop" onClick={() => setShowAttribution(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title">Music</h2>
-            <div className="player-card">
-              <p className="player-label">Now Playing</p>
-              <p className="player-title">
-                {audioTracks[bgNowPlayingIndex]?.title || "—"}
-              </p>
-              <div className="player-controls">
-                <button type="button" className="player-button" onClick={playPrevBg} aria-label="Previous track">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M7 6v12M19 6l-8 6 8 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className="player-button player-button-main"
-                  onClick={() => {
-                    if (bgAudioRef.current) {
-                      if (bgAudioRef.current.paused) bgAudioRef.current.play().catch(() => {});
-                      else bgAudioRef.current.pause();
-                    }
-                  }}
-                  aria-label={bgAudioRef.current?.paused ? "Play" : "Pause"}
-                >
-                  {bgAudioRef.current?.paused ? (
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M8 6l10 6-10 6z" fill="currentColor" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M8 6h3v12H8zM13 6h3v12h-3z" fill="currentColor" />
-                    </svg>
-                  )}
-                </button>
-                <button type="button" className="player-button" onClick={playNextBg} aria-label="Next track">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M17 6v12M5 6l8 6-8 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-            <p className="modal-subtitle">Attribution</p>
-            <div className="modal-list">
-              {audioAttribution.map((item) => (
-                <p key={item.source} className="modal-item">
-                  {item.source} — {item.license} (
-                  <a className="modal-link" href={item.url} target="_blank" rel="noreferrer">
-                    source
-                  </a>
-                  )
-                </p>
+      <footer className="bottom-controls">
+        <div className="audio-controls">
+          <button
+            type="button"
+            className="button button-ghost button-icon"
+            onClick={() =>
+              setBgVolume((prev) => (prev === 1 ? 0 : prev === 0 ? 0.3 : prev === 0.3 ? 0.6 : 1))
+            }
+            aria-label="Background volume"
+            title="Background volume"
+          >
+            <span>BG</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
+              {bgVolume >= 0.3 ? (
+                <path
+                  d="M15 11a2 2 0 010 2"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {bgVolume >= 0.6 ? (
+                <path
+                  d="M16.5 9.5a4 4 0 010 5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {bgVolume >= 1 ? (
+                <path
+                  d="M18 7.5a6 6 0 010 9"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              ) : null}
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="button button-ghost button-icon"
+            onClick={() =>
+              setFxVolume((prev) => (prev === 1.5 ? 0 : prev === 0 ? 0.5 : prev === 0.5 ? 1.0 : 1.5))
+            }
+            aria-label="Effects volume"
+            title="Effects volume"
+          >
+            <span>FX</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
+              {fxVolume >= 0.5 ? (
+                <path
+                  d="M15 11a2 2 0 010 2"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {fxVolume >= 1.0 ? (
+                <path
+                  d="M16.5 9.5a4 4 0 010 5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {fxVolume >= 1.5 ? (
+                <path
+                  d="M18 7.5a6 6 0 010 9"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              ) : null}
+            </svg>
+          </button>
+        </div>
+        <div className="info-controls" />
+      </footer>
+
+      <section className="floating-controls">
+        <div className="theme-panel">
+          <div className="theme-summary">
+            <span className="theme-label">
+              {themeMode === "random"
+                ? "Random"
+                : themes[themeIndex]?.name || "Theme"}
+            </span>
+            <span className="theme-swatches">
+              {(themeMode === "random"
+                ? themes
+                    .slice(randomSwatchOffset, randomSwatchOffset + 4)
+                    .concat(themes.slice(0, Math.max(0, randomSwatchOffset + 4 - themes.length)))
+                    .map((theme) => theme.colors[3])
+                    .slice(0, 4)
+                : (themes[themeIndex]?.colors || themes[0].colors).slice(0, 4)
+              ).map((color) => (
+                <span key={color} className="theme-swatch" style={{ background: color }} />
               ))}
-            </div>
+            </span>
+          </div>
+          <button
+            type="button"
+            className="button button-ghost theme-toggle"
+            onClick={() => setShowThemePicker((prev) => !prev)}
+          >
+            {showThemePicker ? "Close" : "Change theme"}
+          </button>
+          <div className={`theme-accordion ${showThemePicker ? "is-open" : ""}`}>
             <button
               type="button"
-              className="button"
-              onClick={() => setShowAttribution(false)}
+              className={`theme-button theme-button-wide${themeMode === "random" ? " is-active is-random" : ""}`}
+              onClick={() => {
+                setThemeMode("random");
+                setShowThemePicker(false);
+              }}
             >
-              Close
+              <span className="theme-label">Random</span>
+              <span className="theme-swatches">
+                {themes
+                  .slice(randomSwatchOffset, randomSwatchOffset + 4)
+                  .concat(themes.slice(0, Math.max(0, randomSwatchOffset + 4 - themes.length)))
+                  .map((theme) => theme.colors[3])
+                  .slice(0, 4)
+                  .map((color) => (
+                    <span key={color} className="theme-swatch" style={{ background: color }} />
+                  ))}
+              </span>
+            </button>
+            {themes.map((theme, index) => (
+              <button
+                key={theme.name}
+                type="button"
+                className={`theme-button theme-button-wide${
+                  themeMode === "fixed" && index === themeIndex ? " is-active" : ""
+                }`}
+                onClick={() => {
+                  setThemeMode("fixed");
+                  setThemeIndex(index);
+                  setShowThemePicker(false);
+                }}
+              >
+                <span className="theme-label">{theme.name}</span>
+                <span className="theme-swatches">
+                  {theme.colors.slice(0, 4).map((color) => (
+                    <span key={color} className="theme-swatch" style={{ background: color }} />
+                  ))}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="player-card">
+          <p className="player-label">Now Playing</p>
+          <p className="player-title">
+            {audioTracks[bgNowPlayingIndex]?.title || "—"}
+          </p>
+          <div className="player-controls">
+            <button type="button" className="player-button" onClick={playPrevBg} aria-label="Previous track">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 6v12M19 6l-8 6 8 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="player-button player-button-main"
+              onClick={() => {
+                if (bgAudioRef.current) {
+                  if (bgAudioRef.current.paused) bgAudioRef.current.play().catch(() => {});
+                  else bgAudioRef.current.pause();
+                }
+              }}
+              aria-label={bgAudioRef.current?.paused ? "Play" : "Pause"}
+            >
+              {bgAudioRef.current?.paused ? (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 6l10 6-10 6z" fill="currentColor" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 6h3v12H8zM13 6h3v12h-3z" fill="currentColor" />
+                </svg>
+              )}
+            </button>
+            <button type="button" className="player-button" onClick={playNextBg} aria-label="Next track">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M17 6v12M5 6l8 6-8 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
             </button>
           </div>
         </div>
-      ) : null}
+      </section>
+
+      <section className="settings-panel">
+        <div className="settings-section">
+          <p className="modal-subtitle">Credits</p>
+          <div className="modal-list">
+            {audioAttribution.map((item) => (
+              <p key={item.source} className="modal-item">
+                {item.source} — {item.license} (
+                <a className="modal-link" href={item.url} target="_blank" rel="noreferrer">
+                  source
+                </a>
+                )
+              </p>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {solved ? <p className="status-text">Complete. Breathe.</p> : null}
+      {/* Sound testing UI hidden */}
     </div>
   );
 }

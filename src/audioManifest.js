@@ -216,10 +216,5 @@ export const audioAttribution = [
     source: 'Rusted Music Studio – Dark Ambient Piano',
     license: 'CC-BY 4.0',
     url: 'https://rustedstudio.itch.io/free-music-dark-ambient-piano'
-  },
-  {
-    source: 'Rusted Music Studio – CHILL - Lofi Jazz',
-    license: 'CC-BY-SA 4.0',
-    url: 'https://rustedstudio.itch.io/free-music-ambient-lofi-jazz-mp3-midi'
   }
 ];
