@@ -48,7 +48,17 @@ function getSymmetricCells(r, c, rows, cols) {
   return Array.from(set);
 }
 
-function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, clusterCount) {
+function applySymmetricBlanks(
+  edgesByCell,
+  rows,
+  cols,
+  rand,
+  targetCells,
+  clusterCount,
+  minClusterCells = 0,
+  maxEmptyRowRun = Infinity,
+  maxEmptyColRun = Infinity
+) {
   if (targetCells <= 0) return;
   const groupTarget = Math.max(1, Math.round(targetCells / 4));
   const gridRows = Math.ceil(rows / 2);
@@ -68,10 +78,13 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, cluste
   }
 
   const selectGroupsInClusters = (clusterCountValue) => {
+    const minGroups = Math.max(1, Math.ceil(minClusterCells / 4));
     const chosen = new Set();
     const clusters = [];
     const clusterTotal = Math.max(1, clusterCountValue || 1);
-    for (let i = 0; i < clusterTotal; i += 1) {
+    const maxClusterTotal = Math.max(1, Math.floor(groupTarget / minGroups));
+    const finalClusterTotal = Math.min(clusterTotal, maxClusterTotal);
+    for (let i = 0; i < finalClusterTotal; i += 1) {
       let seedIndex = Math.floor(rand() * groups.length);
       let attempts = 0;
       while (chosen.has(seedIndex) && attempts < 20) {
@@ -110,6 +123,9 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, cluste
         const nextIndex = neighbors[Math.floor(rand() * neighbors.length)];
         chosen.add(nextIndex);
         cluster.push(nextIndex);
+        if (cluster.length < minGroups) {
+          continue;
+        }
       } else {
         let nextIndex = Math.floor(rand() * groups.length);
         let attempts = 0;
@@ -120,6 +136,9 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, cluste
         if (!chosen.has(nextIndex)) {
           chosen.add(nextIndex);
           cluster.push(nextIndex);
+          if (cluster.length < minGroups) {
+            continue;
+          }
         } else {
           break;
         }
@@ -163,6 +182,31 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, cluste
     return visited.size === total;
   };
 
+  const maxEmptyRun = (blankSet, axis) => {
+    let maxRun = 0;
+    let run = 0;
+    const outer = axis === "row" ? rows : cols;
+    const inner = axis === "row" ? cols : rows;
+    for (let o = 0; o < outer; o += 1) {
+      let empty = true;
+      for (let i = 0; i < inner; i += 1) {
+        const r = axis === "row" ? o : i;
+        const c = axis === "row" ? i : o;
+        if (!blankSet.has(`${r}-${c}`)) {
+          empty = false;
+          break;
+        }
+      }
+      if (empty) {
+        run += 1;
+        if (run > maxRun) maxRun = run;
+      } else {
+        run = 0;
+      }
+    }
+    return maxRun;
+  };
+
   let blanks = new Set();
   let attempts = 0;
   while (attempts < 40) {
@@ -172,7 +216,16 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, cluste
       if (blanks.size >= groupTarget * 4) break;
       group.forEach((key) => blanks.add(key));
     }
-    if (blanks.size === groupTarget * 4 && isConnected(blanks)) break;
+    const emptyRowRun = maxEmptyRun(blanks, "row");
+    const emptyColRun = maxEmptyRun(blanks, "col");
+    if (
+      blanks.size === groupTarget * 4 &&
+      isConnected(blanks) &&
+      emptyRowRun <= maxEmptyRowRun &&
+      emptyColRun <= maxEmptyColRun
+    ) {
+      break;
+    }
     attempts += 1;
   }
 
@@ -197,17 +250,53 @@ function applySymmetricBlanks(edgesByCell, rows, cols, rand, targetCells, cluste
 
 function makeBoard(seedText, difficulty = "medium") {
   const seed = hashStringToInt(seedText || "zen");
-  const rand = mulberry32(seed);
-  const edgesByCell = generateSolvedEdges(ROWS, COLS, rand);
+  let rand = mulberry32(seed);
+  let edgesByCell = null;
   const difficultyConfig = {
-    easy: { min: 13, max: 20, clusters: 3 },
-    medium: { min: 4, max: 12, clusters: 2 },
-    hard: { min: 0, max: 0, clusters: 0 }
+    easy: { min: 13, max: 20, clusters: 3, minClusterCells: 6, maxEmptyRowRun: 2, maxEmptyColRun: 2 },
+    medium: { min: 4, max: 12, clusters: 2, minClusterCells: 6, maxEmptyRowRun: 2, maxEmptyColRun: 2 },
+    hard: { min: 0, max: 0, clusters: 0, minClusterCells: 0, maxEmptyRowRun: 0, maxEmptyColRun: 0 }
   };
   const config = difficultyConfig[difficulty] || difficultyConfig.medium;
-  if (config.max > 0) {
-    const targetCount = config.min + Math.floor(rand() * (config.max - config.min + 1));
-    applySymmetricBlanks(edgesByCell, ROWS, COLS, rand, targetCount, config.clusters);
+  const minTerminals = Math.max(6, Math.floor((ROWS * COLS) * 0.12));
+  const maxTerminals = Math.max(minTerminals + 2, Math.floor((ROWS * COLS) * 0.22));
+  const maxStraightRunAllowed = 4;
+  const minTerminalDistance = 2;
+  const maxTerminalClusterAllowed = 3;
+  let attemptSeed = 0;
+  while (attemptSeed < 60) {
+    rand = mulberry32(seed + attemptSeed * 97);
+    edgesByCell = generateSolvedEdges(ROWS, COLS, rand);
+    if (config.max > 0) {
+      const targetCount = config.min + Math.floor(rand() * (config.max - config.min + 1));
+      applySymmetricBlanks(
+        edgesByCell,
+        ROWS,
+        COLS,
+        rand,
+        targetCount,
+        config.clusters,
+        config.minClusterCells,
+        config.maxEmptyRowRun,
+        config.maxEmptyColRun
+      );
+    }
+    const terminals = countTerminals(edgesByCell, ROWS, COLS);
+    const longestRun = maxStraightRun(edgesByCell, ROWS, COLS);
+    const tooClustered = hasCloseTerminals(edgesByCell, ROWS, COLS, minTerminalDistance);
+    const terminalClusterSize = maxTerminalCluster(edgesByCell, ROWS, COLS);
+    const edgeConnected = isEdgeGraphConnected(edgesByCell, ROWS, COLS);
+    if (
+      terminals >= minTerminals &&
+      terminals <= maxTerminals &&
+      longestRun <= maxStraightRunAllowed &&
+      !tooClustered &&
+      terminalClusterSize <= maxTerminalClusterAllowed &&
+      edgeConnected
+    ) {
+      break;
+    }
+    attemptSeed += 1;
   }
   const tiles = [];
 
@@ -392,7 +481,7 @@ function generateSolvedEdges(rows, cols, rand) {
     }
   }
 
-  const maxCrosses = 0;
+  const maxCrosses = 1;
   const maxTJunctions = Math.max(2, Math.floor((rows * cols) / 6));
   const extraEdgesTarget = Math.max(1, Math.floor((rows * cols) / 7));
   let added = 0;
@@ -659,6 +748,139 @@ function generateSolvedEdges(rows, cols, rand) {
   return edgesByCell;
 }
 
+function countTerminals(edgesByCell, rows, cols) {
+  let count = 0;
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+      if (edges.filter(Boolean).length === 1) count += 1;
+    }
+  }
+  return count;
+}
+
+function isEdgeGraphConnected(edgesByCell, rows, cols) {
+  let start = null;
+  let total = 0;
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+      if (edges.filter(Boolean).length > 0) {
+        total += 1;
+        if (!start) start = [r, c];
+      }
+    }
+  }
+  if (total <= 1) return true;
+
+  const visited = new Set();
+  const queue = [start];
+  visited.add(`${start[0]}-${start[1]}`);
+  while (queue.length) {
+    const [r, c] = queue.shift();
+    const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+    edges.forEach((hasEdge, dir) => {
+      if (!hasEdge) return;
+      const nr = r + (dir === 2 ? 1 : dir === 0 ? -1 : 0);
+      const nc = c + (dir === 1 ? 1 : dir === 3 ? -1 : 0);
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return;
+      const neighborEdges = edgesByCell.get(`${nr}-${nc}`) || [false, false, false, false];
+      if (neighborEdges.filter(Boolean).length === 0) return;
+      const key = `${nr}-${nc}`;
+      if (visited.has(key)) return;
+      visited.add(key);
+      queue.push([nr, nc]);
+    });
+  }
+  return visited.size === total;
+}
+
+function hasCloseTerminals(edgesByCell, rows, cols, minDistance) {
+  const terminals = [];
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+      if (edges.filter(Boolean).length === 1) terminals.push([r, c]);
+    }
+  }
+  for (let i = 0; i < terminals.length; i += 1) {
+    for (let j = i + 1; j < terminals.length; j += 1) {
+      const dr = Math.abs(terminals[i][0] - terminals[j][0]);
+      const dc = Math.abs(terminals[i][1] - terminals[j][1]);
+      if (dr + dc < minDistance) return true;
+    }
+  }
+  return false;
+}
+
+function maxTerminalCluster(edgesByCell, rows, cols) {
+  const visited = new Set();
+  let maxSize = 0;
+  const isTerminal = (r, c) => {
+    const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+    return edges.filter(Boolean).length === 1;
+  };
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const key = `${r}-${c}`;
+      if (visited.has(key) || !isTerminal(r, c)) continue;
+      let size = 0;
+      const queue = [[r, c]];
+      visited.add(key);
+      while (queue.length) {
+        const [cr, cc] = queue.shift();
+        size += 1;
+        const neighbors = [
+          [cr + 1, cc],
+          [cr - 1, cc],
+          [cr, cc + 1],
+          [cr, cc - 1]
+        ];
+        neighbors.forEach(([nr, nc]) => {
+          if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return;
+          const nKey = `${nr}-${nc}`;
+          if (visited.has(nKey) || !isTerminal(nr, nc)) return;
+          visited.add(nKey);
+          queue.push([nr, nc]);
+        });
+      }
+      if (size > maxSize) maxSize = size;
+    }
+  }
+  return maxSize;
+}
+
+function maxStraightRun(edgesByCell, rows, cols) {
+  let maxRun = 0;
+  for (let c = 0; c < cols; c += 1) {
+    let run = 0;
+    for (let r = 0; r < rows; r += 1) {
+      const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+      const isVertical = edges[0] && edges[2] && !edges[1] && !edges[3];
+      if (isVertical) {
+        run += 1;
+        if (run > maxRun) maxRun = run;
+      } else {
+        run = 0;
+      }
+    }
+  }
+  for (let r = 0; r < rows; r += 1) {
+    let run = 0;
+    for (let c = 0; c < cols; c += 1) {
+      const edges = edgesByCell.get(`${r}-${c}`) || [false, false, false, false];
+      const isHorizontal = edges[1] && edges[3] && !edges[0] && !edges[2];
+      if (isHorizontal) {
+        run += 1;
+        if (run > maxRun) maxRun = run;
+      } else {
+        run = 0;
+      }
+    }
+  }
+  return maxRun;
+}
+
 function oppositeDir(dir) {
   return (dir + 2) % 4;
 }
@@ -710,10 +932,16 @@ function computeConnections(tiles) {
 
 function getInternalPortPairs(tile, edges) {
   if (tile.type === "crossCurve") {
-    return [
-      [0, 2],
-      [1, 3]
-    ];
+    const parity = tile.rotation % 2;
+    return parity === 0
+      ? [
+          [0, 3],
+          [1, 2]
+        ]
+      : [
+          [0, 1],
+          [2, 3]
+        ];
   }
   const dirs = [];
   edges.forEach((on, dir) => {
@@ -752,7 +980,9 @@ function computeCompleteDirs(tiles, connections) {
       const port = `${keyBase}:${dir}`;
       allPorts.push(port);
       if (!portAdj.has(port)) portAdj.set(port, new Set());
-      if (!connected[dir]) danglingPorts.add(port);
+      if (!connected[dir]) {
+        danglingPorts.add(port);
+      }
     });
 
     const internalPairs = getInternalPortPairs(tile, edges);
@@ -795,21 +1025,21 @@ function computeCompleteDirs(tiles, connections) {
     if (visitedPorts.has(port)) return;
     const stack = [port];
     const component = [];
-    let isClosed = true;
+    let hasDangling = false;
 
     while (stack.length) {
       const current = stack.pop();
       if (!current || visitedPorts.has(current)) continue;
       visitedPorts.add(current);
       component.push(current);
-      if (danglingPorts.has(current)) isClosed = false;
+      if (danglingPorts.has(current)) hasDangling = true;
       const neighbors = portAdj.get(current) || [];
       neighbors.forEach((next) => {
         if (!visitedPorts.has(next)) stack.push(next);
       });
     }
 
-    if (isClosed) {
+    if (!hasDangling) {
       component.forEach((p) => completePorts.add(p));
     }
   });
@@ -832,14 +1062,23 @@ function Tile({ tile, onRotate }) {
     (4 - tile.rotation) % 4
   );
   const isTileComplete = localCompleteDirs.some(Boolean);
+  const faceStyle = {};
+  if (typeof tile.pulseDelay === "number") {
+    faceStyle["--pulse-delay"] = `${tile.pulseDelay}ms`;
+  }
+  if (typeof tile.waveDelay === "number") {
+    faceStyle["--wave-delay"] = `${tile.waveDelay}ms`;
+  }
+  const faceStyleProps = Object.keys(faceStyle).length > 0 ? faceStyle : undefined;
   return (
     <button
       type="button"
-      className={`tile ${tile.type === "blank" ? "tile-blank" : ""} ${tile.connectionFlash ? "tile-flash" : ""} ${isTileComplete ? "tile-complete" : ""}`}
+      className={`tile ${tile.type === "blank" ? "tile-blank" : ""} ${isTileComplete ? "tile-complete" : ""} ${typeof tile.pulseDelay === "number" ? "tile-pulse" : ""} ${tile.waveActive ? "tile-wave" : ""}`}
       onClick={onRotate}
       aria-label={`Tile ${tile.r + 1}, ${tile.c + 1}`}
       disabled={tile.type === "blank"}
     >
+      <span className="tile-face" style={faceStyleProps} />
       <div
         className="tile-graphic"
         style={{ transform: `rotate(${tile.rotationDegrees}deg)` }}
@@ -859,7 +1098,7 @@ function TileSVG({ type, completeDirs }) {
         className="tile-stroke"
         fill="none"
         stroke="currentColor"
-        strokeWidth="10"
+        strokeWidth="8"
         strokeLinecap="round"
       >
         {type === "blank" && null}
@@ -867,13 +1106,20 @@ function TileSVG({ type, completeDirs }) {
           <>
             <circle
               cx="50"
-              cy="18"
-              r="10"
+              cy="50"
+              r="9"
               className={isSegmentComplete([2]) ? "tile-stroke-complete" : ""}
+            />
+            <circle
+              cx="50"
+              cy="50"
+              r="4"
+              fill="var(--tile-bg)"
+              stroke="none"
             />
             <line
               x1="50"
-              y1="28"
+              y1="59"
               x2="50"
               y2="95"
               className={isSegmentComplete([2]) ? "tile-stroke-complete" : ""}
@@ -921,19 +1167,14 @@ function TileSVG({ type, completeDirs }) {
         )}
         {type === "crossCurve" && (
           <>
-            <line
-              x1="50"
-              y1="5"
-              x2="50"
-              y2="95"
-              className={isSegmentComplete([0, 2]) ? "tile-stroke-complete" : ""}
+            <path
+              d="M 50 5 Q 50 50 5 50"
+              className={isSegmentComplete([0, 3]) ? "tile-stroke-complete" : ""}
             />
-            <line
-              x1="5"
-              y1="50"
-              x2="95"
-              y2="50"
-              className={isSegmentComplete([1, 3]) ? "tile-stroke-complete" : ""}
+            <path
+              d="M 50 5 Q 50 50 5 50"
+              transform="rotate(180 50 50)"
+              className={isSegmentComplete([1, 2]) ? "tile-stroke-complete" : ""}
             />
           </>
         )}
@@ -1000,6 +1241,7 @@ export default function App() {
     return savedMode === "fixed" ? "fixed" : "random";
   });
   const [showThemePicker, setShowThemePicker] = useState(false);
+  const [themePickerMounted, setThemePickerMounted] = useState(false);
   const [randomSwatchOffset, setRandomSwatchOffset] = useState(0);
   const initialDifficultyIndex = (() => {
     const savedDifficulty = localStorage.getItem("zen_difficulty");
@@ -1007,23 +1249,50 @@ export default function App() {
     return idx === -1 ? 1 : idx;
   })();
   const [difficultyIndex, setDifficultyIndex] = useState(initialDifficultyIndex);
-  const [seedText, setSeedText] = useState("zen-001");
-  const [tiles, setTiles] = useState(() =>
-    makeBoard("zen-001", difficultyLevels[initialDifficultyIndex])
+  const initialSeed = useMemo(() => Math.random().toString(36).slice(2, 8), []);
+  const [seedText, setSeedText] = useState(initialSeed);
+  const initialTiles = makeBoard(initialSeed, difficultyLevels[initialDifficultyIndex]);
+  const [tiles, setTiles] = useState(initialTiles);
+  const [initialRotations, setInitialRotations] = useState(() =>
+    initialTiles.map((tile) => tile.rotation)
   );
-  const [connectionFlashIds, setConnectionFlashIds] = useState(new Set());
+  const [resetSpinning, setResetSpinning] = useState(false);
+  const [pulseDelays, setPulseDelays] = useState(new Map());
+  const [waveDelays, setWaveDelays] = useState(new Map());
+  const [waveActive, setWaveActive] = useState(false);
+  const [solvedDim, setSolvedDim] = useState(false);
   const [fxVolume, setFxVolume] = useState(1);
   const [bgVolume, setBgVolume] = useState(0.3);
+  const [boardNoise] = useState(1);
   const [rotateSoundIndex, setRotateSoundIndex] = useState(4);
   const [completeSoundIndex, setCompleteSoundIndex] = useState(2);
   const [bgQueue, setBgQueue] = useState([]);
   const [bgQueuePos, setBgQueuePos] = useState(0);
   const [bgNowPlayingIndex, setBgNowPlayingIndex] = useState(0);
   const [showAttribution, setShowAttribution] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("Well done");
+  const initialRecentRandomThemes = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("zen_recent_random_themes");
+      const parsed = JSON.parse(raw ?? "[]");
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((value) => Number.isInteger(value));
+    } catch (err) {
+      return [];
+    }
+  }, []);
+  const recentRandomThemesRef = useRef(initialRecentRandomThemes);
+  const successTimeoutRef = useRef(null);
+  const waveStartTimeoutRef = useRef(null);
+  const waveEndTimeoutRef = useRef(null);
   const prevConnectionBitsRef = useRef(new Map());
   const prevCompleteBitsRef = useRef(new Map());
+  const prevSolvedRef = useRef(false);
+  const pulseEndRef = useRef(0);
   const audioCtxRef = useRef(null);
   const bgAudioRef = useRef(null);
+  const bgUserPausedRef = useRef(false);
   const hasInteractedRef = useRef(false);
 
   useEffect(() => {
@@ -1065,14 +1334,18 @@ export default function App() {
     root.style.setProperty("--bg-end", c3);
     root.style.setProperty("--accent", c4);
     root.style.setProperty("--loop", blend(c5, "#2f2a24", 0.45));
-    root.style.setProperty("--loop-soft", "rgba(255, 255, 255, 0.9)");
+    root.style.setProperty("--loop-soft", "rgba(255, 255, 255, 0.75)");
     root.style.setProperty("--ink", blend(c5, "#2f2a24", 0.4));
     root.style.setProperty("--muted", blend(c4, "#2f2a24", 0.35));
-    root.style.setProperty("--board-bg", toRgba(c1, 0.6));
+    root.style.setProperty("--board-bg", "rgba(255, 255, 255, 0.1)");
   }, [themeIndex]);
 
   const connections = useMemo(() => computeConnections(tiles), [tiles]);
   const completeDirs = useMemo(() => computeCompleteDirs(tiles, connections), [tiles, connections]);
+  const resetDisabled = useMemo(() => {
+    if (tiles.length !== initialRotations.length) return false;
+    return tiles.every((tile, index) => tile.rotation === initialRotations[index]);
+  }, [tiles, initialRotations]);
 
   useEffect(() => {
     const savedRotate = Number(localStorage.getItem("zen_rotate_sound"));
@@ -1102,8 +1375,35 @@ export default function App() {
   }, [fxVolume]);
 
   useEffect(() => {
+    document.documentElement.style.setProperty("--page-noise", String(boardNoise));
+  }, [boardNoise]);
+
+  useEffect(() => {
     localStorage.setItem("zen_theme_mode", themeMode);
   }, [themeMode]);
+
+  const getNextRandomTheme = () => {
+    const total = themes.length;
+    if (total === 0) return 0;
+    const recent = recentRandomThemesRef.current
+      .filter((index) => index >= 0 && index < total)
+      .slice(0, 2);
+    const recentSet = new Set(recent);
+    const candidates = [];
+    for (let i = 0; i < total; i += 1) {
+      if (!recentSet.has(i)) candidates.push(i);
+    }
+    const pool = candidates.length > 0 ? candidates : Array.from({ length: total }, (_, i) => i);
+    const next = pool[Math.floor(Math.random() * pool.length)];
+    recentRandomThemesRef.current = [next, ...recent].slice(0, 2);
+    localStorage.setItem("zen_recent_random_themes", JSON.stringify(recentRandomThemesRef.current));
+    return next;
+  };
+
+  const clearRecentRandomThemes = () => {
+    recentRandomThemesRef.current = [];
+    localStorage.removeItem("zen_recent_random_themes");
+  };
 
   useEffect(() => {
     if (themeMode !== "random") return undefined;
@@ -1129,31 +1429,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const nextFlash = new Set();
     const nextBits = new Map();
-
     tiles.forEach((tile) => {
       const connected = connections.get(tile.id) || [false, false, false, false];
       const bits = connectionBitmask(connected);
-      const prevBits = prevConnectionBitsRef.current.get(tile.id) || 0;
-      if ((bits & ~prevBits) !== 0) {
-        nextFlash.add(tile.id);
-      }
       nextBits.set(tile.id, bits);
     });
-
     prevConnectionBitsRef.current = nextBits;
-    if (!hasInteractedRef.current) {
-      return undefined;
-    }
-    if (nextFlash.size > 0) {
-      setConnectionFlashIds(nextFlash);
-      const timeout = setTimeout(() => {
-        setConnectionFlashIds(new Set());
-      }, 900);
-      return () => clearTimeout(timeout);
-    }
-    return undefined;
   }, [tiles, connections]);
 
   useEffect(() => {
@@ -1187,6 +1469,9 @@ export default function App() {
   function ensureAudioReady() {
     const ctx = ensureAudioContext();
     if (bgVolume > 0) {
+      if (bgUserPausedRef.current) {
+        return ctx;
+      }
       if (!bgAudioRef.current) {
         startAmbient();
       } else if (bgAudioRef.current.paused) {
@@ -1356,6 +1641,44 @@ export default function App() {
     });
   }
 
+  function playCompleteMelodyDescending(index) {
+    if (fxVolume === 0) return;
+    const baseMelody = completeMelodies[index % completeMelodies.length].slice().reverse();
+    const last = baseMelody[baseMelody.length - 1];
+    const extra = [
+      (last - 2 + testSounds.length) % testSounds.length,
+      (last - 4 + testSounds.length) % testSounds.length
+    ];
+    const melody = baseMelody.concat(extra);
+    const noteGap = 150;
+    melody.forEach((noteIndex, idx) => {
+      setTimeout(() => playTestSound(noteIndex), idx * noteGap);
+    });
+  }
+
+  function playWaveMelodyAscending() {
+    if (fxVolume === 0) return;
+    const ctx = ensureAudioReady();
+    const freqs = [196, 220, 247, 262, 294, 330, 392];
+    const noteGap = 180;
+    const duration = 0.5;
+    freqs.forEach((freq, idx) => {
+      window.setTimeout(() => {
+        const osc = ctx.createOscillator();
+        const amp = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        amp.gain.value = 0;
+        amp.gain.linearRampToValueAtTime(0.025 * fxVolume, ctx.currentTime + 0.02);
+        amp.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+        osc.connect(amp);
+        amp.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + duration + 0.05);
+      }, idx * noteGap);
+    });
+  }
+
   function playSelectedRotate() {
     playTestSound(rotateSoundIndex);
   }
@@ -1367,6 +1690,7 @@ export default function App() {
   function startAmbient(forcedPos) {
     if (bgVolume == 0) return;
     if (bgQueue.length === 0) return;
+    bgUserPausedRef.current = false;
     const position = typeof forcedPos === "number" ? forcedPos : bgQueuePos;
     const trackIndex = bgQueue[position] ?? 0;
     setBgNowPlayingIndex(trackIndex);
@@ -1394,6 +1718,7 @@ export default function App() {
 
   function playNextBg() {
     if (bgQueue.length === 0) return;
+    bgUserPausedRef.current = false;
     const nextPos = (bgQueuePos + 1) % bgQueue.length;
     setBgQueuePos(nextPos);
     stopAmbient();
@@ -1402,6 +1727,7 @@ export default function App() {
 
   function playPrevBg() {
     if (bgQueue.length === 0) return;
+    bgUserPausedRef.current = false;
     const prevPos = (bgQueuePos - 1 + bgQueue.length) % bgQueue.length;
     setBgQueuePos(prevPos);
     stopAmbient();
@@ -1432,17 +1758,81 @@ export default function App() {
     return () => window.removeEventListener("pointerdown", handleFirstInteraction);
   }, []);
 
-  const solved = useMemo(
-    () => tiles.every((t) => t.rotation === t.targetRotation),
-    [tiles]
-  );
+  const solved = useMemo(() => {
+    return tiles.every((tile) => {
+      const edges = getEdges(tile);
+      const dirs = completeDirs.get(tile.id) || [false, false, false, false];
+      return edges.every((hasEdge, dir) => !hasEdge || dirs[dir]);
+    });
+  }, [tiles, completeDirs]);
 
-  function regenerate(nextSeed, nextDifficulty = difficultyLevels[difficultyIndex]) {
-    if (themeMode === "random") {
-      const nextTheme = Math.floor(Math.random() * themes.length);
+  useEffect(() => {
+    if (solved && !prevSolvedRef.current) {
+      const startWave = () => {
+        const delays = new Map();
+        const step = 180;
+        const groupSize = 2;
+        tiles.forEach((tile) => {
+          const groupIndex = Math.floor(tile.r / groupSize);
+          delays.set(tile.id, groupIndex * step);
+        });
+        setWaveDelays(delays);
+        setWaveActive(true);
+        setSolvedDim(false);
+        playWaveMelodyAscending();
+        const total = (Math.ceil(ROWS / groupSize) - 1) * step + 700;
+        waveEndTimeoutRef.current = window.setTimeout(() => {
+          setWaveActive(false);
+          setSolvedDim(true);
+          waveEndTimeoutRef.current = null;
+        }, total);
+      };
+
+      const waveDelay = 400;
+      const remaining = Math.max(0, pulseEndRef.current - performance.now());
+      const totalDelay = remaining + waveDelay;
+      if (totalDelay > 0) {
+        waveStartTimeoutRef.current = window.setTimeout(() => {
+          startWave();
+          waveStartTimeoutRef.current = null;
+        }, totalDelay);
+      } else {
+        startWave();
+      }
+      const successDelay = totalDelay + 1600;
+      if (successTimeoutRef.current) {
+        window.clearTimeout(successTimeoutRef.current);
+      }
+      successTimeoutRef.current = window.setTimeout(() => {
+        const messages = [
+          "Nicely done",
+          "Well done",
+          "Nice work",
+          "Good work",
+          "Level complete",
+          "Puzzle complete",
+          "Level solved",
+          "Puzzle solved",
+          "Task complete"
+        ];
+        setSuccessMessage(messages[Math.floor(Math.random() * messages.length)]);
+        setShowSuccess(true);
+      }, successDelay);
+    }
+    if (!solved && prevSolvedRef.current) {
+      cancelFinalAnimations();
+    }
+    prevSolvedRef.current = solved;
+  }, [solved, tiles]);
+
+  function regenerate(nextSeed, nextDifficulty = difficultyLevels[difficultyIndex], { shuffleTheme = false } = {}) {
+    if (shuffleTheme && themeMode === "random") {
+      const nextTheme = getNextRandomTheme();
       setThemeIndex(nextTheme);
     }
-    setTiles(makeBoard(nextSeed, nextDifficulty));
+    const nextTiles = makeBoard(nextSeed, nextDifficulty);
+    setTiles(nextTiles);
+    setInitialRotations(nextTiles.map((tile) => tile.rotation));
   }
 
   function handleSeedChange(e) {
@@ -1453,6 +1843,9 @@ export default function App() {
 
   function rotateTile(index) {
     hasInteractedRef.current = true;
+    if (showSuccess || waveActive) {
+      cancelFinalAnimations();
+    }
     const next = [...tiles];
     const tile = { ...next[index] };
     const prevRotationDegrees = tile.rotationDegrees ?? tile.rotation * 90;
@@ -1472,79 +1865,354 @@ export default function App() {
       }
     });
 
+    if (hasNewComplete) {
+      const startTile = next[index];
+      const byPos = new Map();
+      next.forEach((t) => byPos.set(`${t.r}-${t.c}`, t));
+      const startComplete = nextComplete.get(startTile.id) || [false, false, false, false];
+      if (!startComplete.some(Boolean)) {
+        setTiles(next);
+        if (!hasNewComplete) {
+          playSelectedRotate();
+        }
+        return;
+      }
+      const queue = [{ tile: startTile, dist: 0 }];
+      const visited = new Set([startTile.id]);
+      const distanceMap = new Map();
+      let maxDist = 0;
+      const component = new Set([startTile.id]);
+      while (queue.length) {
+        const { tile: current, dist } = queue.shift();
+        distanceMap.set(current.id, dist);
+        if (dist > maxDist) maxDist = dist;
+        const connected = nextConnections.get(current.id) || [false, false, false, false];
+        const completeDirs = nextComplete.get(current.id) || [false, false, false, false];
+        const neighbors = [
+          byPos.get(`${current.r - 1}-${current.c}`),
+          byPos.get(`${current.r}-${current.c + 1}`),
+          byPos.get(`${current.r + 1}-${current.c}`),
+          byPos.get(`${current.r}-${current.c - 1}`)
+        ];
+        neighbors.forEach((neighbor, dir) => {
+          if (!neighbor) return;
+          if (!connected[dir] || !completeDirs[dir]) return;
+          const neighborComplete = nextComplete.get(neighbor.id) || [false, false, false, false];
+          if (!neighborComplete[oppositeDir(dir)]) return;
+          if (visited.has(neighbor.id)) return;
+          visited.add(neighbor.id);
+          component.add(neighbor.id);
+          queue.push({ tile: neighbor, dist: dist + 1 });
+        });
+      }
+      const delays = new Map();
+      const base = 80;
+      const min = 38;
+      distanceMap.forEach((dist, id) => {
+        const progress = maxDist > 0 ? dist / Math.max(1, maxDist) : 0;
+        const eased = 1 - Math.pow(1 - progress, 2);
+        const step = base - (base - min) * eased;
+        delays.set(id, dist * step);
+      });
+      const isFullyCompletePath = Array.from(component).every((id) => {
+        const tileObj = byPos.get(id);
+        if (!tileObj) return false;
+        const edges = getEdges(tileObj);
+        const completeDirs = nextComplete.get(id) || [false, false, false, false];
+        return edges.every((hasEdge, dir) => !hasEdge || completeDirs[dir]);
+      });
+      if (delays.size > 0 && isFullyCompletePath) {
+        setPulseDelays(delays);
+        const endStep = base - (base - min);
+        const pulseDuration = maxDist * endStep + 260;
+        pulseEndRef.current = performance.now() + pulseDuration;
+        window.setTimeout(() => setPulseDelays(new Map()), pulseDuration);
+      }
+    }
+
     setTiles(next);
     if (!hasNewComplete) {
       playSelectedRotate();
     }
   }
 
+  function solveAllButOne() {
+    const nonBlankIndices = tiles
+      .map((tile, idx) => (tile.type === "blank" ? null : idx))
+      .filter((idx) => idx !== null);
+    if (nonBlankIndices.length === 0) return;
+    const leaveIndex = nonBlankIndices[Math.floor(Math.random() * nonBlankIndices.length)];
+    const next = tiles.map((tile, idx) => {
+      const target = tile.targetRotation;
+      const rotation = idx === leaveIndex ? (target + 1) % 4 : target;
+      return {
+        ...tile,
+        rotation,
+        rotationDegrees: rotation * 90
+      };
+    });
+    setTiles(next);
+  }
+
+  const cancelFinalAnimations = () => {
+    setWaveActive(false);
+    setWaveDelays(new Map());
+    setSolvedDim(false);
+    setShowSuccess(false);
+    if (successTimeoutRef.current) {
+      window.clearTimeout(successTimeoutRef.current);
+      successTimeoutRef.current = null;
+    }
+    if (waveStartTimeoutRef.current) {
+      window.clearTimeout(waveStartTimeoutRef.current);
+      waveStartTimeoutRef.current = null;
+    }
+    if (waveEndTimeoutRef.current) {
+      window.clearTimeout(waveEndTimeoutRef.current);
+      waveEndTimeoutRef.current = null;
+    }
+  };
+
   return (
-    <div className="app">
+    <div className={`app${solvedDim ? " is-solved" : ""}${showSuccess ? " show-success" : ""}`}>
       <header className="top-controls">
-        <h1 className="app-title">zentō</h1>
-        <div className="top-actions">
+        <h1 className="app-title">
+          ZENT
           <button
             type="button"
-            className="button"
-            onClick={() => regenerate(seedText)}
-            aria-label="Reset level"
-            title="Reset"
+            className="title-cta"
+            onClick={solveAllButOne}
+            aria-label="Solve all but one tile"
+            title="Solve all but one tile"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M7 7a7 7 0 1 1-1.9 6.3"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M5 4.5v4.8h4.8"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            ō
           </button>
-          <button
-            type="button"
-            className="button button-ghost"
-            onClick={() => {
-              const nextSeed = Math.random().toString(36).slice(2, 8);
-              setSeedText(nextSeed);
-              regenerate(nextSeed);
-            }}
-          >
-            New level
-          </button>
-          <button
-            type="button"
-            className="button button-ghost"
-            onClick={() => {
-              const nextIndex = (difficultyIndex + 1) % difficultyLevels.length;
-              setDifficultyIndex(nextIndex);
-              regenerate(seedText, difficultyLevels[nextIndex]);
-            }}
-            aria-label="Difficulty"
-            title="Difficulty"
-          >
-            {difficultyLevels[difficultyIndex].charAt(0).toUpperCase() +
-              difficultyLevels[difficultyIndex].slice(1)}
-          </button>
+        </h1>
+        <div className="header-controls">
+          <div className="header-actions">
+            <button
+              type="button"
+              className={`button${resetSpinning ? " reset-spin" : ""}`}
+              onClick={() => {
+                if (resetDisabled) return;
+                setResetSpinning(true);
+                window.setTimeout(() => setResetSpinning(false), 420);
+                regenerate(seedText, difficultyLevels[difficultyIndex], { shuffleTheme: false });
+              }}
+              aria-label="Reset level"
+              title="Reset"
+              disabled={resetDisabled}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M17 7a7 7 0 1 0 1.9 6.3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M19 4.5v4.8h-4.8"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={() => {
+                const nextSeed = Math.random().toString(36).slice(2, 8);
+                setSeedText(nextSeed);
+                regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: true });
+              }}
+            >
+              New level
+            </button>
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={() => {
+                const nextIndex = (difficultyIndex + 1) % difficultyLevels.length;
+                setDifficultyIndex(nextIndex);
+                regenerate(seedText, difficultyLevels[nextIndex], { shuffleTheme: true });
+              }}
+              aria-label="Difficulty"
+              title="Difficulty"
+            >
+              {difficultyLevels[difficultyIndex].charAt(0).toUpperCase() +
+                difficultyLevels[difficultyIndex].slice(1)}
+            </button>
+          </div>
+          <div className="header-audio audio-controls">
+            <button
+              type="button"
+              className="button button-ghost button-icon"
+              onClick={() =>
+                setBgVolume((prev) => (prev === 0.6 ? 0 : prev === 0 ? 0.2 : prev === 0.2 ? 0.4 : 0.6))
+              }
+              aria-label="Background volume"
+              title="Background volume"
+            >
+              <span>BG</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
+                {bgVolume >= 0.2 ? (
+                  <path
+                    d="M13.5 10a2.5 2.5 0 010 4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeOpacity="0.55"
+                  />
+                ) : null}
+                {bgVolume >= 0.4 ? (
+                  <path
+                    d="M15.5 8a4.5 4.5 0 010 8"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeOpacity="0.75"
+                  />
+                ) : null}
+                {bgVolume >= 0.6 ? (
+                  <path
+                    d="M17.5 6a6.5 6.5 0 010 12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeOpacity="0.9"
+                  />
+                ) : null}
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="button button-ghost button-icon"
+              onClick={() =>
+                setFxVolume((prev) => (prev === 1.6 ? 0 : prev === 0 ? 0.6 : prev === 0.6 ? 1.2 : 1.6))
+              }
+              aria-label="Effects volume"
+              title="Effects volume"
+            >
+              <span>FX</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
+                {fxVolume >= 0.6 ? (
+                  <path
+                    d="M13.5 10a2.5 2.5 0 010 4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeOpacity="0.55"
+                  />
+                ) : null}
+                {fxVolume >= 1.2 ? (
+                  <path
+                    d="M15.5 8a4.5 4.5 0 010 8"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeOpacity="0.75"
+                  />
+                ) : null}
+                {fxVolume >= 1.6 ? (
+                  <path
+                    d="M17.5 6a6.5 6.5 0 010 12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeOpacity="0.9"
+                  />
+                ) : null}
+              </svg>
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="board-wrap">
+        {showSuccess ? (
+          <div className="success-overlay">
+            <div className="success-confetti">
+              {Array.from({ length: 120 }).map((_, idx) => {
+                const palette = themes[themeIndex]?.colors || themes[0].colors;
+                const color = palette[idx % palette.length];
+                const size = 6 + (idx % 5) * 3 + (idx % 2);
+                const drift = (idx % 2 === 0 ? 1 : -1) * (12 + (idx % 7) * 6);
+                const rotate = (idx % 8) * 18;
+                const delay = (idx % 20) * 45;
+                const duration = 1600 + (idx % 10) * 140;
+                const radius = idx % 5 === 0 ? "999px" : "2px";
+                return (
+                  <span
+                    key={idx}
+                    className="confetti-piece"
+                    style={{
+                      "--confetti-x": `${(idx % 24) * 4 + 2}%`,
+                      "--confetti-delay": `${delay}ms`,
+                      "--confetti-duration": `${duration}ms`,
+                      "--confetti-size": `${size}px`,
+                      "--confetti-rotate": `${rotate}deg`,
+                      "--confetti-color": color,
+                      "--confetti-drift": `${drift}px`,
+                      "--confetti-radius": radius
+                    }}
+                  />
+                );
+              })}
+            </div>
+            <div className="success-card">
+              <div className="success-icon">
+                <div className="success-diamond">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 12l4 4 8-8" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+              </div>
+              <p className="success-title">{successMessage}</p>
+              <div className="success-actions">
+                <button
+                  type="button"
+                  className="button success-action"
+                  onClick={() => {
+                    setShowSuccess(false);
+                    regenerate(seedText, difficultyLevels[difficultyIndex], { shuffleTheme: false });
+                  }}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost success-action"
+                  onClick={() => {
+                    setShowSuccess(false);
+                    const nextSeed = Math.random().toString(36).slice(2, 8);
+                    setSeedText(nextSeed);
+                    regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: true });
+                  }}
+                >
+                  New level
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div
           className="board"
           style={{
             "--cols": COLS,
-            "--rows": ROWS,
-            gridTemplateColumns: `repeat(${COLS}, var(--tile-size))`,
-            gridTemplateRows: `repeat(${ROWS}, var(--tile-size))`
+            "--rows": ROWS
           }}
         >
           {tiles.map((tile, index) => (
@@ -1552,8 +2220,10 @@ export default function App() {
               key={tile.id}
               tile={{
                 ...tile,
-                connectionFlash: connectionFlashIds.has(tile.id),
-                completeDirs: completeDirs.get(tile.id)
+                completeDirs: completeDirs.get(tile.id),
+                pulseDelay: pulseDelays.get(tile.id),
+                waveDelay: waveDelays.get(tile.id),
+                waveActive
               }}
               onRotate={() => rotateTile(index)}
             />
@@ -1561,96 +2231,9 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="bottom-controls">
-        <div className="audio-controls">
-          <button
-            type="button"
-            className="button button-ghost button-icon"
-            onClick={() =>
-              setBgVolume((prev) => (prev === 1 ? 0 : prev === 0 ? 0.3 : prev === 0.3 ? 0.6 : 1))
-            }
-            aria-label="Background volume"
-            title="Background volume"
-          >
-            <span>BG</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
-              {bgVolume >= 0.3 ? (
-                <path
-                  d="M15 11a2 2 0 010 2"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              ) : null}
-              {bgVolume >= 0.6 ? (
-                <path
-                  d="M16.5 9.5a4 4 0 010 5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              ) : null}
-              {bgVolume >= 1 ? (
-                <path
-                  d="M18 7.5a6 6 0 010 9"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              ) : null}
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="button button-ghost button-icon"
-            onClick={() =>
-              setFxVolume((prev) => (prev === 1.5 ? 0 : prev === 0 ? 0.5 : prev === 0.5 ? 1.0 : 1.5))
-            }
-            aria-label="Effects volume"
-            title="Effects volume"
-          >
-            <span>FX</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 9h3l4-3v12l-4-3H4z" fill="currentColor" />
-              {fxVolume >= 0.5 ? (
-                <path
-                  d="M15 11a2 2 0 010 2"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              ) : null}
-              {fxVolume >= 1.0 ? (
-                <path
-                  d="M16.5 9.5a4 4 0 010 5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              ) : null}
-              {fxVolume >= 1.5 ? (
-                <path
-                  d="M18 7.5a6 6 0 010 9"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              ) : null}
-            </svg>
-          </button>
-        </div>
-        <div className="info-controls" />
-      </footer>
-
       <section className="floating-controls">
-        <div className="theme-panel">
+        <div className="theme-panel theme-panel-card">
+          <p className="theme-title">Theme</p>
           <div className="theme-summary">
             <span className="theme-label">
               {themeMode === "random"
@@ -1659,12 +2242,8 @@ export default function App() {
             </span>
             <span className="theme-swatches">
               {(themeMode === "random"
-                ? themes
-                    .slice(randomSwatchOffset, randomSwatchOffset + 4)
-                    .concat(themes.slice(0, Math.max(0, randomSwatchOffset + 4 - themes.length)))
-                    .map((theme) => theme.colors[3])
-                    .slice(0, 4)
-                : (themes[themeIndex]?.colors || themes[0].colors).slice(0, 4)
+                ? []
+                : (themes[themeIndex]?.colors || themes[0].colors).slice(0, 3)
               ).map((color) => (
                 <span key={color} className="theme-swatch" style={{ background: color }} />
               ))}
@@ -1672,31 +2251,31 @@ export default function App() {
           </div>
           <button
             type="button"
-            className="button button-ghost theme-toggle"
-            onClick={() => setShowThemePicker((prev) => !prev)}
+            className="button button-ghost theme-toggle theme-toggle-full"
+            onClick={() => {
+              if (showThemePicker) {
+                setShowThemePicker(false);
+                window.setTimeout(() => setThemePickerMounted(false), 260);
+              } else {
+                setThemePickerMounted(true);
+                window.requestAnimationFrame(() => setShowThemePicker(true));
+              }
+            }}
           >
             {showThemePicker ? "Close" : "Change theme"}
           </button>
-          <div className={`theme-accordion ${showThemePicker ? "is-open" : ""}`}>
+          {themePickerMounted ? (
+            <div className={`theme-accordion${showThemePicker ? " is-open" : ""}`}>
             <button
               type="button"
               className={`theme-button theme-button-wide${themeMode === "random" ? " is-active is-random" : ""}`}
               onClick={() => {
                 setThemeMode("random");
                 setShowThemePicker(false);
+                window.setTimeout(() => setThemePickerMounted(false), 260);
               }}
             >
               <span className="theme-label">Random</span>
-              <span className="theme-swatches">
-                {themes
-                  .slice(randomSwatchOffset, randomSwatchOffset + 4)
-                  .concat(themes.slice(0, Math.max(0, randomSwatchOffset + 4 - themes.length)))
-                  .map((theme) => theme.colors[3])
-                  .slice(0, 4)
-                  .map((color) => (
-                    <span key={color} className="theme-swatch" style={{ background: color }} />
-                  ))}
-              </span>
             </button>
             {themes.map((theme, index) => (
               <button
@@ -1708,41 +2287,51 @@ export default function App() {
                 onClick={() => {
                   setThemeMode("fixed");
                   setThemeIndex(index);
+                  clearRecentRandomThemes();
                   setShowThemePicker(false);
+                  window.setTimeout(() => setThemePickerMounted(false), 260);
                 }}
               >
                 <span className="theme-label">{theme.name}</span>
                 <span className="theme-swatches">
-                  {theme.colors.slice(0, 4).map((color) => (
+                  {theme.colors.slice(0, 3).map((color) => (
                     <span key={color} className="theme-swatch" style={{ background: color }} />
                   ))}
                 </span>
               </button>
             ))}
-          </div>
+            </div>
+          ) : null}
         </div>
         <div className="player-card">
-          <p className="player-label">Now Playing</p>
-          <p className="player-title">
-            {audioTracks[bgNowPlayingIndex]?.title || "—"}
-          </p>
+          <div className="player-info">
+            <p className="player-label">Now Playing</p>
+            <p className="player-title">
+              {audioTracks[bgNowPlayingIndex]?.title || "—"}
+            </p>
+          </div>
           <div className="player-controls">
             <button type="button" className="player-button" onClick={playPrevBg} aria-label="Previous track">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M7 6v12M19 6l-8 6 8 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            <button
-              type="button"
-              className="player-button player-button-main"
-              onClick={() => {
-                if (bgAudioRef.current) {
-                  if (bgAudioRef.current.paused) bgAudioRef.current.play().catch(() => {});
-                  else bgAudioRef.current.pause();
-                }
-              }}
-              aria-label={bgAudioRef.current?.paused ? "Play" : "Pause"}
-            >
+              <button
+                type="button"
+                className="player-button player-button-main"
+                onClick={() => {
+                  if (bgAudioRef.current) {
+                    if (bgAudioRef.current.paused) {
+                      bgUserPausedRef.current = false;
+                      bgAudioRef.current.play().catch(() => {});
+                    } else {
+                      bgUserPausedRef.current = true;
+                      bgAudioRef.current.pause();
+                    }
+                  }
+                }}
+                aria-label={bgAudioRef.current?.paused ? "Play" : "Pause"}
+              >
               {bgAudioRef.current?.paused ? (
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M8 6l10 6-10 6z" fill="currentColor" />
@@ -1760,26 +2349,19 @@ export default function App() {
             </button>
           </div>
         </div>
-      </section>
-
-      <section className="settings-panel">
-        <div className="settings-section">
-          <p className="modal-subtitle">Credits</p>
-          <div className="modal-list">
-            {audioAttribution.map((item) => (
-              <p key={item.source} className="modal-item">
-                {item.source} — {item.license} (
-                <a className="modal-link" href={item.url} target="_blank" rel="noreferrer">
-                  source
-                </a>
-                )
-              </p>
-            ))}
-          </div>
+        <div className="credits-footer">
+          {audioAttribution.map((item) => (
+            <span key={item.source}>
+              {item.source} — {item.license} (
+              <a className="modal-link" href={item.url} target="_blank" rel="noreferrer">
+                source
+              </a>
+              )
+            </span>
+          ))}
         </div>
       </section>
 
-      {solved ? <p className="status-text">Complete. Breathe.</p> : null}
       {/* Sound testing UI hidden */}
     </div>
   );
