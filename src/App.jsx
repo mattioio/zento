@@ -3,13 +3,27 @@ import { useRegisterSW } from "virtual:pwa-register/react";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import loreAndOrderLogo from "./assets/loreandorder.svg";
 import bakedProgressionLevels from "./progressionLevels.json";
+import {
+  ANALYTICS_CONSENT,
+  getAnalyticsConsent,
+  initAnalytics,
+  setAnalyticsConsent as persistAnalyticsConsent,
+  track
+} from "./analytics.js";
 
 const ROWS = 10;
 const COLS = 6;
 const TOTAL_LEVELS = 96;
 const MIN_TILES = 4;
 
-const TILE_TYPES = ["blank", "terminal", "straight", "curveLeft", "curveRight", "tJunction"];
+const TILE_TYPES = [
+  "blank",
+  "terminal",
+  "straight",
+  "curveLeft",
+  "curveRight",
+  "tJunction"
+];
 
 const PROGRESSION_SETTINGS_RANGES = {
   gapRate: { min: 0, max: 96 },
@@ -35,6 +49,16 @@ const DEFAULT_PROGRESSION_SETTINGS = {
   emptyColMax: 2,
   centerBias: 0,
   variant: 0
+};
+
+const BASE_EDGES = {
+  blank: [false, false, false, false],
+  terminal: [false, false, true, false],
+  straight: [true, false, true, false],
+  curveLeft: [true, false, false, true],
+  curveRight: [true, true, false, false],
+  tJunction: [true, true, false, true],
+  crossCurve: [true, true, true, true]
 };
 
 function clampValue(value, min, max) {
@@ -72,7 +96,9 @@ function buildProgressionSeed(settings) {
 
 function parseProgressionSeed(seedText) {
   if (!seedText || typeof seedText !== "string") return null;
-  const match = seedText.match(/^P(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)$/i);
+  const match = seedText.match(
+    /^P(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)$/i
+  );
   if (match) {
     return normalizeProgressionSettings({
       gapRate: Number(match[1]),
@@ -87,7 +113,9 @@ function parseProgressionSeed(seedText) {
       variant: Number(match[10])
     });
   }
-  const legacyMatch = seedText.match(/^P(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)$/i);
+  const legacyMatch = seedText.match(
+    /^P(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)$/i
+  );
   if (legacyMatch) {
     return normalizeProgressionSettings({
       gapRate: Number(legacyMatch[1]),
@@ -165,16 +193,6 @@ function mulberry32(seed) {
     return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-const BASE_EDGES = {
-  blank: [false, false, false, false],
-  terminal: [false, false, true, false],
-  straight: [true, false, true, false],
-  curveLeft: [true, false, false, true],
-  curveRight: [true, true, false, false],
-  tJunction: [true, true, false, true],
-  crossCurve: [true, true, true, true]
-};
 
 function getSymmetricCells(r, c, rows, cols) {
   const set = new Set();
@@ -1489,10 +1507,15 @@ function ThemePanel({
   onSelectTheme
 }) {
   const activeTheme = themes[themeIndex] || themes[0];
+  const activeThemeLabel = activeTheme?.nightMode ? "Night mode" : activeTheme?.name;
+  const activeSleepLevel = Number(activeTheme?.sleepLevel) || 1;
   const showActiveSwatch = themeMode !== "random" && activeTheme?.showSwatch !== false;
   const coreThemes = themes
     .map((theme, index) => ({ theme, index }))
-    .filter(({ theme }) => !theme.unlockable);
+    .filter(({ theme }) => !theme.unlockable && !theme.nightMode);
+  const nightThemes = themes
+    .map((theme, index) => ({ theme, index }))
+    .filter(({ theme }) => theme.nightMode);
   const unlockableThemes = themes
     .map((theme, index) => ({ theme, index }))
     .filter(({ theme }) => theme.unlockable);
@@ -1501,11 +1524,21 @@ function ThemePanel({
       <p className="theme-title">Theme</p>
       <div className="theme-summary">
         <span className="theme-label">
-          {themeMode === "random" ? "Shuffle" : activeTheme?.name || "Theme"}
+          {themeMode === "random" ? "Shuffle" : activeThemeLabel || "Theme"}
         </span>
         {themeMode === "random" ? (
           <span className="theme-swatches">
             <span className="theme-swatch theme-swatch-random" />
+          </span>
+        ) : activeTheme?.nightMode ? (
+          <span className="theme-swatches theme-swatches-night">
+            <span className="theme-sleep" aria-hidden="true">
+              <span className={`sleep-z-stack sleep-z-stack-${activeSleepLevel}`}>
+                <span className="sleep-z sleep-z-1">Z</span>
+                {activeSleepLevel >= 2 ? <span className="sleep-z sleep-z-2">Z</span> : null}
+                {activeSleepLevel >= 3 ? <span className="sleep-z sleep-z-3">Z</span> : null}
+              </span>
+            </span>
           </span>
         ) : showActiveSwatch ? (
           <span className="theme-swatches">
@@ -1562,6 +1595,43 @@ function ThemePanel({
               </button>
             );
           })}
+          {nightThemes.length ? (
+            <div className="theme-group-header theme-group-header--night">
+              <div className="theme-group-title">Night modes</div>
+            </div>
+          ) : null}
+          {nightThemes.length ? (
+            <div className="theme-night-row">
+              {nightThemes.map(({ theme, index }) => {
+                const isActive = themeMode === "fixed" && index === themeIndex;
+                const sleepLevel = Number(theme.sleepLevel) || 1;
+                return (
+                  <button
+                    key={theme.name}
+                    type="button"
+                    className={`theme-button theme-night-card is-night${
+                      isActive ? " is-active" : ""
+                    }`}
+                    onClick={() => onSelectTheme(index)}
+                    aria-label={theme.name}
+                  >
+                    <span className="theme-label theme-label-hidden" aria-hidden="true">
+                      Night mode
+                    </span>
+                    <span className="theme-sleep" aria-hidden="true">
+                      <span className="theme-sleep-optic">
+                        <span className={`sleep-z-stack sleep-z-stack-${sleepLevel}`}>
+                          <span className="sleep-z sleep-z-1">Z</span>
+                          {sleepLevel >= 2 ? <span className="sleep-z sleep-z-2">Z</span> : null}
+                          {sleepLevel >= 3 ? <span className="sleep-z sleep-z-3">Z</span> : null}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
           {unlockableThemes.length ? (
             <div className="theme-group-header">
               <div className="theme-group-title">Unlockable themes</div>
@@ -1704,23 +1774,108 @@ function PerformanceCard({ performanceMode, onToggle }) {
   );
 }
 
-function InstallBanner({ onInstall, onDismiss }) {
+function AnalyticsCard({ consent, onAllow, onDeny }) {
+  const isGranted = consent === ANALYTICS_CONSENT.GRANTED;
+  const isDenied = consent === ANALYTICS_CONSENT.DENIED;
+  const note = isGranted
+    ? "Anonymous usage helps improve balance and device support."
+    : isDenied
+      ? "Analytics are off. You can turn this on anytime."
+      : "Choose whether to share anonymous usage data.";
+  return (
+    <div className="analytics-card theme-panel-card">
+      <div className="perf-row">
+        <div className="perf-copy">
+          <p className="perf-label">Analytics</p>
+          <p className="perf-note">{note}</p>
+        </div>
+        <button
+          type="button"
+          className={`button button-ghost perf-toggle${isGranted ? " is-active" : ""}`}
+          onClick={isGranted ? onDeny : onAllow}
+          aria-pressed={isGranted}
+        >
+          {isGranted ? "On" : "Off"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PrivacyCard({ onOpen }) {
+  return (
+    <div className="privacy-card theme-panel-card">
+      <div className="perf-row">
+        <div className="perf-copy">
+          <p className="perf-label">Privacy</p>
+          <p className="perf-note">Read how analytics and data are handled.</p>
+        </div>
+        <button type="button" className="button button-ghost" onClick={onOpen}>
+          Privacy Policy
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InstallBanner({ mode, onInstall, isInstalled }) {
+  const title = "Play ZENTō offline";
+  const iconSrc = `${import.meta.env.BASE_URL}icons/icon-192.png`;
+  const note =
+    isInstalled
+      ? "You're running the installed app."
+      : mode === "prompt"
+      ? "Get the real app—no app store needed. Installs for offline, full-screen play."
+      : mode === "ios"
+        ? "On iOS: tap Share, then “Add to Home Screen.” No app store needed."
+        : "No app store needed. Install the app for offline play (Chrome/Edge/Android).";
   return (
     <div className="install-banner">
-      <div className="install-copy">
-        <p className="install-title">Install Zen Tile</p>
-        <p className="install-note">
-          Play offline and launch full-screen from your home screen.
-        </p>
+      <div className="install-lead">
+        <div className="install-icon" aria-hidden="true">
+          <img src={iconSrc} alt="" />
+        </div>
+        <div className="install-copy">
+          <div className="install-title-row">
+            <p className="install-title">{title}</p>
+            {isInstalled ? <span className="install-tag">Already installed</span> : null}
+          </div>
+          <p className="install-note">{note}</p>
+          <div className="install-platforms" aria-label="Supported platforms">
+            <span className="install-platform" role="img" aria-label="Chrome" title="Chrome">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M16.214 8.69l6.715-1.679A12.027 12.027 0 0 1 24 11.972C24 18.57 18.569 24 11.968 24c-.302 0-.605-.011-.907-.034l4.905-8.347c.356-.376.655-.803.881-1.271a5.451 5.451 0 0 0-.043-4.748 5.156 5.156 0 0 0-.59-.91zm-3.24 8.575l-2.121 6.682C4.738 23.345 0 18.14 0 11.977 0 9.592.709 7.26 2.038 5.279l4.834 8.377c.18.539 1.119 2.581 3.067 3.327.998.382 2.041.481 3.035.282zM11.973 7.62c-2.006.019-3.878 1.544-4.281 3.512a4.478 4.478 0 0 0 1.237 4.032c1.214 1.186 3.14 1.578 4.734.927 1.408-.576 2.47-1.927 2.691-3.431.272-1.856-.788-3.832-2.495-4.629a4.413 4.413 0 0 0-1.886-.411zM7.046 9.962L2.259 4.963A12.043 12.043 0 0 1 11.997 0c4.56 0 8.744 2.592 10.774 6.675H12.558c-1.811-.125-3.288.52-4.265 1.453a5.345 5.345 0 0 0-1.247 1.834z"
+                  fill="currentColor"
+                />
+              </svg>
+            </span>
+            <span className="install-platform" role="img" aria-label="Edge" title="Edge">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M23.158 14.25H7.821c0 .578.086 1.103.262 1.575.188.465.431.881.743 1.245.31.364.675.675 1.102.938.413.262.863.48 1.343.648.476.173.975.3 1.48.383a10.078 10.078 0 0 0 3.311-.026c.564-.105 1.111-.244 1.651-.42.54-.177 1.061-.387 1.583-.627.525-.24 1.057-.502 1.605-.795v5.085c-.612.3-1.212.552-1.812.769-.6.21-1.2.394-1.81.54-.612.15-1.23.263-1.865.33a18.41 18.41 0 0 1-1.957.105c-.9 0-1.77-.105-2.606-.311a10.217 10.217 0 0 1-2.355-.893 9.869 9.869 0 0 1-2.018-1.417 8.957 8.957 0 0 1-2.595-4.148 9.359 9.359 0 0 1-.356-2.61c0-.986.135-1.924.405-2.82.274-.9.66-1.717 1.17-2.467a8.92 8.92 0 0 1 1.856-1.999A9.82 9.82 0 0 1 9.426 5.91a5.206 5.206 0 0 0-1.163 1.774 7.671 7.671 0 0 0-.536 2.055h8.542c0-.863-.086-1.613-.262-2.258-.176-.645-.458-1.181-.851-1.605-.39-.427-.893-.75-1.512-.96-.618-.214-1.365-.322-2.238-.322-1.032 0-2.063.15-3.094.461-1.031.3-2.01.731-2.94 1.275-.93.551-1.785 1.2-2.565 1.942-.78.75-1.436 1.557-1.969 2.43a14 14 0 0 1 .649-2.913C1.798 6.863 2.21 6 2.706 5.2a11.606 11.606 0 0 1 1.74-2.152c.663-.645 1.398-1.2 2.212-1.65C7.472.949 8.334.585 9.272.34A13.4 13.4 0 0 1 12.257 0c.615 0 1.226.056 1.837.165.612.113 1.208.263 1.79.458 1.154.397 2.185.952 3.093 1.657a10.553 10.553 0 0 1 2.287 2.449c.62.926 1.088 1.95 1.41 3.063.323 1.114.488 2.273.488 3.477v2.981z"
+                  fill="currentColor"
+                />
+              </svg>
+            </span>
+            <span className="install-platform" role="img" aria-label="Android" title="Android">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M22.146 9.227c0-.815-.658-1.478-1.476-1.478s-1.48.66-1.48 1.48v6.19c0 .81.663 1.48 1.483 1.48.814 0 1.476-.67 1.476-1.48v-6.2h-.01zM5.393 8.032l.004 9.6c0 .885.704 1.59 1.573 1.59h1.063v3.28c0 .82.66 1.482 1.47 1.482s1.467-.66 1.48-1.468v-3.28h1.993v3.28c0 .823.66 1.483 1.47 1.483.823 0 1.482-.66 1.482-1.49v-3.28h1.078c.87 0 1.573-.71 1.573-1.578v-9.63L5.35 8.03l.04.002zm9.648-2.93c-.31 0-.56-.25-.56-.56 0-.305.25-.558.56-.56.31 0 .56.255.56.56 0 .31-.25.56-.56.56m-6.06 0c-.31 0-.56-.25-.56-.56 0-.307.25-.558.56-.558.31 0 .56.255.56.57s-.252.567-.57.567m6.29-2.9L16.29.33c.06-.105.014-.226-.076-.285C16.11 0 15.99.03 15.93.135l-1.05 1.9c-.868-.405-1.856-.63-2.89-.63s-2.018.215-2.892.603L8.064.105c-.053-.098-.18-.135-.278-.08-.1.045-.136.18-.08.27l1.03 1.875c-2.03 1.047-3.4 3.04-3.4 5.33h13.328c0-2.29-1.368-4.283-3.396-5.33M3.33 7.742c-.817 0-1.48.665-1.48 1.483v6.192c0 .82.664 1.48 1.484 1.48.814 0 1.477-.66 1.477-1.48v-6.19c0-.815-.66-1.478-1.47-1.478"
+                  fill="currentColor"
+                />
+              </svg>
+            </span>
+          </div>
+        </div>
       </div>
-      <div className="install-actions">
-        <button type="button" className="button" onClick={onInstall}>
-          Install
-        </button>
-        <button type="button" className="button button-ghost" onClick={onDismiss}>
-          Not now
-        </button>
-      </div>
+      {mode === "prompt" && !isInstalled ? (
+        <div className="install-actions">
+          <button type="button" className="button" onClick={onInstall}>
+            Install app
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1825,11 +1980,22 @@ function ControlStack({
   isLoading,
   performanceMode,
   onTogglePerformance,
-  audioAttribution
+  audioAttribution,
+  showInstallBanner,
+  installMode,
+  isInstalled,
+  onInstall,
+  analyticsConsent,
+  onAllowAnalytics,
+  onDenyAnalytics,
+  onOpenPrivacyPolicy
 }) {
   return (
     <section className="floating-controls">
       <p className="settings-title">Settings</p>
+      {showInstallBanner ? (
+        <InstallBanner mode={installMode} onInstall={onInstall} isInstalled={isInstalled} />
+      ) : null}
       <ThemePanel
         themeMode={themeMode}
         themeIndex={themeIndex}
@@ -1855,6 +2021,12 @@ function ControlStack({
         audioAttribution={audioAttribution}
       />
       <PerformanceCard performanceMode={performanceMode} onToggle={onTogglePerformance} />
+      <AnalyticsCard
+        consent={analyticsConsent}
+        onAllow={onAllowAnalytics}
+        onDeny={onDenyAnalytics}
+      />
+      <PrivacyCard onOpen={onOpenPrivacyPolicy} />
       <div className="build-footer">
         <span>Made by</span>
         <span
@@ -1913,6 +2085,36 @@ export default function App() {
     {
       name: "Harbor Blue",
       colors: ["#B0BEC5", "#90A4AE", "#78909C", "#607D8B", "#455A64"]
+    },
+    {
+      name: "Night mode — Bright",
+      kind: "night-1",
+      nightMode: true,
+      includeInRandom: false,
+      fullWidth: true,
+      showSwatch: false,
+      sleepLevel: 1,
+      colors: ["#000000", "#000000", "#000000", "#D2D2D2", "#A5A5A5"]
+    },
+    {
+      name: "Night mode — Medium",
+      kind: "night-2",
+      nightMode: true,
+      includeInRandom: false,
+      fullWidth: true,
+      showSwatch: false,
+      sleepLevel: 2,
+      colors: ["#000000", "#000000", "#000000", "#A4A4A4", "#787878"]
+    },
+    {
+      name: "Night mode — Dim",
+      kind: "night-3",
+      nightMode: true,
+      includeInRandom: false,
+      fullWidth: true,
+      showSwatch: false,
+      sleepLevel: 3,
+      colors: ["#000000", "#000000", "#000000", "#6E6E6E", "#4E4E4E"]
     },
     {
       name: "Neumorphic",
@@ -2046,6 +2248,12 @@ export default function App() {
   const [performanceMode, setPerformanceMode] = useState(
     () => localStorage.getItem("zen_performance_mode") === "on"
   );
+  const initialAnalyticsConsent = getAnalyticsConsent();
+  const [analyticsConsent, setAnalyticsConsentState] = useState(initialAnalyticsConsent);
+  const [showAnalyticsBanner, setShowAnalyticsBanner] = useState(
+    initialAnalyticsConsent === null
+  );
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   const [screen, setScreen] = useState("home");
   const builderUnlocked = import.meta.env.DEV;
   const [builderSettings, setBuilderSettings] = useState(() => {
@@ -2159,6 +2367,9 @@ export default function App() {
   const prevConnectionBitsRef = useRef(new Map());
   const prevCompleteBitsRef = useRef(new Map());
   const prevSolvedRef = useRef(false);
+  const lastProgressBoardRef = useRef(null);
+  const lastEndlessBoardRef = useRef(null);
+  const analyticsInitSentRef = useRef(false);
   const progressShuffleThemeRef = useRef(false);
   const pulseEndRef = useRef(0);
   const levelsInitRef = useRef(true);
@@ -2169,26 +2380,57 @@ export default function App() {
   const bgUserPausedRef = useRef(false);
   const hasInteractedRef = useRef(false);
   const [installPromptEvent, setInstallPromptEvent] = useState(null);
-  const [installDismissed, setInstallDismissed] = useState(
-    () => localStorage.getItem("zen_install_dismissed") === "yes"
-  );
   const [isStandalone, setIsStandalone] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker
   } = useRegisterSW();
+  const getEventContext = () => {
+    const context = { screen, difficulty: difficultyLevels[difficultyIndex] };
+    if (typeof window !== "undefined") {
+      context.viewport_w = window.innerWidth;
+      context.viewport_h = window.innerHeight;
+      context.device_pixel_ratio = window.devicePixelRatio || 1;
+    }
+    if (isStandalone) {
+      context.is_pwa = true;
+    }
+    if (isIOS) {
+      context.is_ios = true;
+    }
+    return context;
+  };
+  const emitEvent = (name, props = {}) => {
+    if (analyticsConsent !== ANALYTICS_CONSENT.GRANTED) return;
+    track(name, { ...getEventContext(), ...props });
+  };
+  const handleAnalyticsConsent = async (next) => {
+    persistAnalyticsConsent(next);
+    setAnalyticsConsentState(next);
+    setShowAnalyticsBanner(false);
+    if (next === ANALYTICS_CONSENT.GRANTED) {
+      await initAnalytics();
+      track("analytics_consent", { value: "granted" });
+    }
+  };
+  const openPrivacyPolicy = () => {
+    setShowPrivacyPolicy(true);
+    emitEvent("privacy_policy_opened");
+  };
+  const closePrivacyPolicy = () => {
+    setShowPrivacyPolicy(false);
+  };
 
   useEffect(() => {
     localStorage.setItem("zen_theme_index", String(themeIndex));
   }, [themeIndex]);
 
   useEffect(() => {
-    if (installDismissed) {
-      localStorage.setItem("zen_install_dismissed", "yes");
-    } else {
-      localStorage.removeItem("zen_install_dismissed");
+    if (analyticsConsent === ANALYTICS_CONSENT.GRANTED) {
+      initAnalytics();
     }
-  }, [installDismissed]);
+  }, [analyticsConsent]);
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
@@ -2212,13 +2454,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const ua = window.navigator.userAgent || "";
+    setIsIOS(/iphone|ipad|ipod/i.test(ua));
+  }, []);
+
+  useEffect(() => {
     const handleBeforeInstallPrompt = (event) => {
       event.preventDefault();
       setInstallPromptEvent(event);
     };
     const handleAppInstalled = () => {
       setInstallPromptEvent(null);
-      setInstallDismissed(true);
     };
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
     window.addEventListener("appinstalled", handleAppInstalled);
@@ -2231,6 +2477,197 @@ export default function App() {
   useEffect(() => {
     const theme = themes[themeIndex] || themes[0];
     const root = document.documentElement;
+    const parseColor = (value) => {
+      if (!value) return null;
+      const raw = value.trim().toLowerCase();
+      if (raw === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
+      if (raw.startsWith("#")) {
+        const hex = raw.slice(1);
+        const normalized =
+          hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+        if (normalized.length !== 6) return null;
+        return {
+          r: parseInt(normalized.slice(0, 2), 16),
+          g: parseInt(normalized.slice(2, 4), 16),
+          b: parseInt(normalized.slice(4, 6), 16),
+          a: 1
+        };
+      }
+      const match = raw.match(/rgba?\(([^)]+)\)/);
+      if (!match) return null;
+      const parts = match[1].split(/\s*,\s*/).map(Number);
+      if (parts.length < 3) return null;
+      return {
+        r: parts[0],
+        g: parts[1],
+        b: parts[2],
+        a: parts.length === 4 ? parts[3] : 1
+      };
+    };
+    const blendRgba = (top, bottom) => {
+      const alpha = top.a + bottom.a * (1 - top.a);
+      if (alpha === 0) return { r: 0, g: 0, b: 0, a: 0 };
+      return {
+        r: (top.r * top.a + bottom.r * bottom.a * (1 - top.a)) / alpha,
+        g: (top.g * top.a + bottom.g * bottom.a * (1 - top.a)) / alpha,
+        b: (top.b * top.a + bottom.b * bottom.a * (1 - top.a)) / alpha,
+        a: alpha
+      };
+    };
+    const srgbToLinear = (value) => {
+      const v = value / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    const luminance = (color) =>
+      0.2126 * srgbToLinear(color.r) +
+      0.7152 * srgbToLinear(color.g) +
+      0.0722 * srgbToLinear(color.b);
+    const contrastRatio = (a, b) => {
+      const l1 = luminance(a);
+      const l2 = luminance(b);
+      const lighter = Math.max(l1, l2);
+      const darker = Math.min(l1, l2);
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+    const mix = (a, b, t) => ({
+      r: Math.round(a.r + (b.r - a.r) * t),
+      g: Math.round(a.g + (b.g - a.g) * t),
+      b: Math.round(a.b + (b.b - a.b) * t),
+      a: 1
+    });
+    const toRgb = (color) =>
+      `rgb(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)})`;
+    const resolveVarValue = (name, seen = new Set()) => {
+      if (seen.has(name)) return null;
+      seen.add(name);
+      const raw = getComputedStyle(root).getPropertyValue(name).trim();
+      if (!raw) return null;
+      const varMatch = raw.match(/^var\((--[^),\s]+)(?:,\s*([^)]+))?\)$/);
+      if (varMatch) {
+        return resolveVarValue(varMatch[1], seen) ?? varMatch[2]?.trim() ?? null;
+      }
+      return raw;
+    };
+    const resolveColorVar = (name, fallback) => {
+      const raw = resolveVarValue(name);
+      if (!raw) return fallback;
+      if (raw.includes("gradient")) return fallback;
+      const parsed = parseColor(raw);
+      if (!parsed) return fallback;
+      if (parsed.a < 1 && fallback) {
+        return blendRgba(parsed, fallback);
+      }
+      return parsed;
+    };
+    const ensureContrast = (fg, backgrounds, target) => {
+      if (!fg || backgrounds.length === 0) return fg;
+      const safeBackgrounds = backgrounds.filter(Boolean);
+      if (safeBackgrounds.length === 0) return fg;
+      const findWorst = (color) => {
+        let worst = safeBackgrounds[0];
+        let worstRatio = contrastRatio(color, worst);
+        safeBackgrounds.slice(1).forEach((bg) => {
+          const ratio = contrastRatio(color, bg);
+          if (ratio < worstRatio) {
+            worstRatio = ratio;
+            worst = bg;
+          }
+        });
+        return { worst, ratio: worstRatio };
+      };
+      const { worst, ratio } = findWorst(fg);
+      if (ratio >= target) return fg;
+      const white = { r: 255, g: 255, b: 255, a: 1 };
+      const black = { r: 0, g: 0, b: 0, a: 1 };
+      const toward =
+        contrastRatio(white, worst) >= contrastRatio(black, worst) ? white : black;
+      let lo = 0;
+      let hi = 1;
+      let best = toward;
+      for (let i = 0; i < 18; i += 1) {
+        const mid = (lo + hi) / 2;
+        const candidate = mix(fg, toward, mid);
+        if (contrastRatio(candidate, worst) >= target) {
+          best = candidate;
+          hi = mid;
+        } else {
+          lo = mid;
+        }
+      }
+      return best;
+    };
+    const ensureMinContrast = (fg, backgrounds, target) => {
+      const safeBackgrounds = backgrounds.filter(Boolean);
+      if (safeBackgrounds.length === 0) return fg;
+      const minRatio = Math.min(...safeBackgrounds.map((bg) => contrastRatio(fg, bg)));
+      if (minRatio >= target) return fg;
+      const white = { r: 255, g: 255, b: 255, a: 1 };
+      const black = { r: 0, g: 0, b: 0, a: 1 };
+      const minWhite = Math.min(...safeBackgrounds.map((bg) => contrastRatio(white, bg)));
+      const minBlack = Math.min(...safeBackgrounds.map((bg) => contrastRatio(black, bg)));
+      return minWhite >= minBlack ? white : black;
+    };
+      const pickBestText = (backgrounds) => {
+        const safeBackgrounds = backgrounds.filter(Boolean);
+        if (safeBackgrounds.length === 0) return { r: 0, g: 0, b: 0, a: 1 };
+        const white = { r: 255, g: 255, b: 255, a: 1 };
+        const black = { r: 0, g: 0, b: 0, a: 1 };
+        const minContrast = (color) =>
+          Math.min(...safeBackgrounds.map((bg) => contrastRatio(color, bg)));
+        return minContrast(white) >= minContrast(black) ? white : black;
+      };
+      const applyContrastOverrides = () => {
+        const baseBg = resolveColorVar("--bg-start", { r: 255, g: 255, b: 255, a: 1 });
+        const boardBg = resolveColorVar("--board-bg", baseBg);
+        const surfaceBg = resolveColorVar("--surface-bg", boardBg);
+        const controlBg = resolveColorVar("--control-bg", boardBg);
+        const buttonBg = resolveColorVar("--button-bg", controlBg);
+        const controlActiveBg = resolveColorVar("--control-active-bg", controlBg);
+        const buttonHoverBg = resolveColorVar("--button-hover-bg", buttonBg);
+        const ink = resolveColorVar("--ink", { r: 34, g: 34, b: 34, a: 1 });
+        const muted = resolveColorVar("--muted", ink);
+        const inkAdjusted = ensureContrast(ink, [baseBg, surfaceBg, controlBg], 3);
+        const mutedAdjusted = ensureContrast(muted, [baseBg, surfaceBg, controlBg], 3);
+        root.style.setProperty("--ink", toRgb(inkAdjusted));
+        root.style.setProperty("--muted", toRgb(mutedAdjusted));
+      if (buttonBg) {
+        const buttonBackgrounds = [buttonBg];
+        const buttonBase = pickBestText(buttonBackgrounds);
+        let buttonText = ensureContrast(buttonBase, buttonBackgrounds, 3);
+        buttonText = ensureMinContrast(buttonText, buttonBackgrounds, 3);
+        root.style.setProperty("--button-text", toRgb(buttonText));
+      }
+      if (buttonHoverBg) {
+        const hoverBackgrounds = [buttonHoverBg];
+        const hoverBase = pickBestText(hoverBackgrounds);
+        let hoverText = ensureContrast(hoverBase, hoverBackgrounds, 3);
+        hoverText = ensureMinContrast(hoverText, hoverBackgrounds, 3);
+        root.style.setProperty("--button-hover-text", toRgb(hoverText));
+      } else {
+        root.style.removeProperty("--button-hover-text");
+      }
+      if (controlActiveBg) {
+        const activeBase = pickBestText([controlActiveBg]);
+        let activeText = ensureContrast(activeBase, [controlActiveBg], 3);
+        activeText = ensureMinContrast(activeText, [controlActiveBg], 3);
+        root.style.setProperty("--control-active-text", toRgb(activeText));
+      }
+      };
+    const setMetaThemeColor = (value) => {
+      if (!value) return;
+      let meta = document.querySelector('meta[name="theme-color"]');
+      if (!meta) {
+        meta = document.createElement("meta");
+        meta.setAttribute("name", "theme-color");
+        document.head.appendChild(meta);
+      }
+      meta.setAttribute("content", value);
+    };
+    const resolveThemeColor = (fallback) => {
+      const computed = window.getComputedStyle(root);
+      const bgStart = computed.getPropertyValue("--bg-start").trim();
+      return bgStart || fallback;
+    };
     if (theme?.kind) {
       root.setAttribute("data-theme", theme.kind);
       [
@@ -2244,6 +2681,8 @@ export default function App() {
         "--muted",
         "--board-bg"
       ].forEach((prop) => root.style.removeProperty(prop));
+      applyContrastOverrides();
+      setMetaThemeColor(resolveThemeColor("#000000"));
       return;
     }
     root.removeAttribute("data-theme");
@@ -2283,6 +2722,8 @@ export default function App() {
     root.style.setProperty("--ink", blend(c5, "#2f2a24", 0.4));
     root.style.setProperty("--muted", blend(c4, "#2f2a24", 0.35));
     root.style.setProperty("--board-bg", "rgba(255, 255, 255, 0.1)");
+    applyContrastOverrides();
+    setMetaThemeColor(resolveThemeColor(c1));
   }, [themeIndex]);
 
   const connections = useMemo(() => computeConnections(tiles), [tiles]);
@@ -2368,6 +2809,25 @@ export default function App() {
     recentRandomThemesRef.current = [];
     localStorage.removeItem("zen_recent_random_themes");
   };
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const unlockLevels = themes
+      .filter((theme) => theme.unlockable && Number.isFinite(Number(theme.unlockLevel)))
+      .map((theme) => Number(theme.unlockLevel));
+    window.__zenTest = {
+      getThemeNames: () => themes.map((theme) => theme.name),
+      setThemeIndex: (index) => {
+        setThemeMode("fixed");
+        setThemeIndex(index);
+        clearRecentRandomThemes();
+      },
+      unlockAllThemes: () => setProgressCompletedLevels(unlockLevels)
+    };
+    return () => {
+      delete window.__zenTest;
+    };
+  }, [themes, clearRecentRandomThemes, setThemeIndex, setThemeMode, setProgressCompletedLevels]);
 
   useEffect(() => {
     if (themeMode === "random") {
@@ -3226,6 +3686,32 @@ export default function App() {
     });
     return map;
   }, [assignedLevels]);
+  const duplicateSeedLevels = useMemo(() => {
+    const seedCounts = new Map();
+    progressionLevels.forEach((seed, index) => {
+      const trimmed = seed.trim();
+      if (!trimmed) return;
+      const entry = seedCounts.get(trimmed);
+      if (entry) {
+        entry.count += 1;
+        entry.levels.push(index + 1);
+      } else {
+        seedCounts.set(trimmed, { count: 1, levels: [index + 1] });
+      }
+    });
+    const duplicates = new Set();
+    seedCounts.forEach((entry) => {
+      if (entry.count > 1) {
+        entry.levels.forEach((level) => duplicates.add(level));
+      }
+    });
+    return duplicates;
+  }, [progressionLevels]);
+  const hasDuplicateSeeds = duplicateSeedLevels.size > 0;
+  const duplicateSeedList = useMemo(
+    () => Array.from(duplicateSeedLevels).sort((a, b) => a - b),
+    [duplicateSeedLevels]
+  );
   const progressCompletedSet = useMemo(
     () => new Set(progressCompletedLevels),
     [progressCompletedLevels]
@@ -3286,6 +3772,32 @@ export default function App() {
       : successMessage;
 
   useEffect(() => {
+    if (analyticsConsent === ANALYTICS_CONSENT.DENIED) {
+      analyticsInitSentRef.current = false;
+      return;
+    }
+    if (analyticsConsent !== ANALYTICS_CONSENT.GRANTED || analyticsInitSentRef.current) return;
+    analyticsInitSentRef.current = true;
+    emitEvent("app_opened");
+    emitEvent("screen_view", { screen });
+    if (screen === "endless" || screen === "progress") {
+      emitEvent("mode_started", { mode: screen });
+    }
+    if (isProgress && Number.isInteger(progressLevelNumber)) {
+      emitEvent("board_started", { mode: "progress", level: progressLevelNumber });
+    } else if (isEndless && seedText) {
+      emitEvent("board_started", { mode: "endless" });
+    }
+  }, [
+    analyticsConsent,
+    screen,
+    isProgress,
+    isEndless,
+    progressLevelNumber,
+    seedText
+  ]);
+
+  useEffect(() => {
     if (!progressLevelsAvailable) {
       setProgressCursor(0);
       return;
@@ -3339,6 +3851,12 @@ export default function App() {
 
   useEffect(() => {
     const prev = prevScreenRef.current;
+    if (prev !== screen) {
+      emitEvent("screen_view", { screen });
+      if (screen === "endless" || screen === "progress") {
+        emitEvent("mode_started", { mode: screen });
+      }
+    }
     if (prev === "endless" && screen !== "endless") {
       endlessStateRef.current = {
         seedText,
@@ -3375,11 +3893,31 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
+    if (!isProgress || !Number.isInteger(progressLevelNumber)) return;
+    const key = `${progressLevelNumber}-${difficultyLevels[difficultyIndex]}`;
+    if (lastProgressBoardRef.current === key) return;
+    lastProgressBoardRef.current = key;
+    emitEvent("board_started", { mode: "progress", level: progressLevelNumber });
+  }, [isProgress, progressLevelNumber, difficultyIndex]);
+
+  useEffect(() => {
+    if (!isEndless || !seedText) return;
+    const key = `${seedText}-${difficultyLevels[difficultyIndex]}`;
+    if (lastEndlessBoardRef.current === key) return;
+    lastEndlessBoardRef.current = key;
+    emitEvent("board_started", { mode: "endless" });
+  }, [isEndless, seedText, difficultyIndex]);
+
+  useEffect(() => {
     if (!isBoardScreen) {
       prevSolvedRef.current = solved;
       return;
     }
     if (solved && !prevSolvedRef.current) {
+      emitEvent("board_completed", {
+        mode: isProgress ? "progress" : "endless",
+        level: isProgress && Number.isInteger(progressLevelNumber) ? progressLevelNumber : undefined
+      });
       const step = 180;
       const groupSize = 2;
       const delays = new Map();
@@ -3536,7 +4074,9 @@ export default function App() {
   };
   const isBgPaused = bgIsPaused;
   const isBgLoading = bgIsLoading;
-  const showInstallBanner = Boolean(installPromptEvent) && !installDismissed && !isStandalone && isHome;
+  const showInstallBanner = !isStandalone;
+  const isDevBuild = import.meta.env.DEV;
+  const installMode = installPromptEvent ? "prompt" : isIOS ? "ios" : "unavailable";
   const handleInstallClick = async () => {
     if (!installPromptEvent) return;
     installPromptEvent.prompt();
@@ -3546,10 +4086,6 @@ export default function App() {
       // Ignore prompt errors; we just hide the banner for now.
     }
     setInstallPromptEvent(null);
-    setInstallDismissed(true);
-  };
-  const handleInstallDismiss = () => {
-    setInstallDismissed(true);
   };
   const handleUpdateNow = () => {
     setNeedRefresh(false);
@@ -3558,6 +4094,7 @@ export default function App() {
   const handleUpdateLater = () => {
     setNeedRefresh(false);
   };
+  const privacyContact = (import.meta.env.VITE_PRIVACY_CONTACT || "").trim();
 
   return (
     <div
@@ -3565,6 +4102,104 @@ export default function App() {
         performanceMode ? " is-perf" : ""
       }${isHome ? " is-home" : ""}`}
     >
+      {isDevBuild ? <div className="dev-badge">DEV</div> : null}
+      {showPrivacyPolicy ? (
+        <div className="modal-backdrop" onClick={closePrivacyPolicy} role="dialog" aria-modal="true">
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <p className="modal-title">Privacy Policy</p>
+            <p className="modal-subtitle">Last updated: February 8, 2026</p>
+
+            <div className="modal-section">
+              <p className="modal-subtitle modal-subtitle-spaced">What we collect</p>
+              <div className="modal-list">
+                <p className="modal-item">
+                  Anonymous gameplay events (mode started, board started/completed, level number for
+                  progress mode).
+                </p>
+                <p className="modal-item">
+                  Device and app context (viewport size, device pixel ratio, browser, OS, PWA
+                  install status).
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <p className="modal-subtitle modal-subtitle-spaced">How we use it</p>
+              <div className="modal-list">
+                <p className="modal-item">
+                  Improve balance, performance, and device support.
+                </p>
+                <p className="modal-item">
+                  Understand mode usage and level completion rates.
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <p className="modal-subtitle modal-subtitle-spaced">Your choices</p>
+              <div className="modal-list">
+                <p className="modal-item">
+                  Analytics are off by default. Opt in or out anytime in Settings.
+                </p>
+                <p className="modal-item">
+                  Clearing site data in your browser removes stored analytics identifiers.
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <p className="modal-subtitle modal-subtitle-spaced">Processors</p>
+              <div className="modal-list">
+                <p className="modal-item">
+                  We use PostHog to process anonymous analytics events after you opt in.
+                </p>
+              </div>
+            </div>
+
+            {privacyContact ? (
+              <div className="modal-section">
+                <p className="modal-subtitle modal-subtitle-spaced">Contact</p>
+                <div className="modal-list">
+                  <p className="modal-item">{privacyContact}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="modal-actions">
+              <button type="button" className="button" onClick={closePrivacyPolicy}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {showAnalyticsBanner ? (
+        <div className="analytics-banner" role="dialog" aria-live="polite">
+          <div className="analytics-banner-copy">
+            <p className="analytics-banner-title">Help improve ZENTō</p>
+            <p className="analytics-banner-note">
+              Allow anonymous analytics so we can see device sizes and level completion. No
+              personal data.
+            </p>
+          </div>
+          <div className="analytics-banner-actions">
+            <button
+              type="button"
+              className="button"
+              onClick={() => handleAnalyticsConsent(ANALYTICS_CONSENT.GRANTED)}
+            >
+              Allow analytics
+            </button>
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={() => handleAnalyticsConsent(ANALYTICS_CONSENT.DENIED)}
+            >
+              No thanks
+            </button>
+          </div>
+        </div>
+      ) : null}
       {isHome ? (
         <section className="home-screen">
           <div className="home-stack">
@@ -3605,9 +4240,6 @@ export default function App() {
             </div>
           </div>
           <div className="home-bottom">
-            {showInstallBanner ? (
-              <InstallBanner onInstall={handleInstallClick} onDismiss={handleInstallDismiss} />
-            ) : null}
             <ControlStack
               themeMode={themeMode}
               themeIndex={themeIndex}
@@ -3639,6 +4271,14 @@ export default function App() {
               performanceMode={performanceMode}
               onTogglePerformance={() => setPerformanceMode((prev) => !prev)}
               audioAttribution={audioAttribution}
+              showInstallBanner={showInstallBanner}
+              installMode={installMode}
+              isInstalled={isStandalone}
+              onInstall={handleInstallClick}
+              analyticsConsent={analyticsConsent}
+              onAllowAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.GRANTED)}
+              onDenyAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.DENIED)}
+              onOpenPrivacyPolicy={openPrivacyPolicy}
             />
             {builderUnlocked ? (
             <div className="home-builder">
@@ -4232,27 +4872,6 @@ export default function App() {
 
           <section className="floating-controls builder-footer">
             <div className="builder-panel builder-map-panel">
-              <div className="builder-section builder-export">
-                <div className="builder-section-header">
-                  <span className="label">Export</span>
-                </div>
-                <div className="builder-export-row">
-                  <button type="button" className="button" onClick={handleExportLevelsJSON}>
-                    Export JSON
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-ghost builder-action"
-                    onClick={handleExportLevelsCSV}
-                  >
-                    Export CSV
-                  </button>
-                </div>
-                <p className="builder-note">
-                  Exports all {TOTAL_LEVELS} levels (blank seeds stay blank).
-                </p>
-              </div>
-
               <div className="builder-section builder-save">
                 <div className="builder-section-header">
                   <span className="label">Save Levels</span>
@@ -4278,6 +4897,11 @@ export default function App() {
               </div>
 
               <div className="builder-section builder-levels">
+                {hasDuplicateSeeds ? (
+                  <p className="builder-error">
+                    Duplicate seeds detected on levels {duplicateSeedList.join(", ")}. Each level should have a unique seed.
+                  </p>
+                ) : null}
                 <div className="builder-levels-header">
                   <span className="label">Level Map</span>
                   <span className="builder-count">
@@ -4289,7 +4913,12 @@ export default function App() {
                 </p>
                 <ul className="builder-level-list">
                   {levelEntries.map(({ level, seed }) => (
-                    <li key={level} className="builder-level-item">
+                    <li
+                      key={level}
+                      className={`builder-level-item${
+                        duplicateSeedLevels.has(level) ? " is-duplicate" : ""
+                      }`}
+                    >
                       <span className="builder-level-number">Level {level}</span>
                       <input
                         type="text"
@@ -4334,6 +4963,27 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+              </div>
+
+              <div className="builder-section builder-export">
+                <div className="builder-section-header">
+                  <span className="label">Export</span>
+                </div>
+                <div className="builder-export-row">
+                  <button type="button" className="button" onClick={handleExportLevelsJSON}>
+                    Export JSON
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-ghost builder-action"
+                    onClick={handleExportLevelsCSV}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+                <p className="builder-note">
+                  Exports all {TOTAL_LEVELS} levels (blank seeds stay blank).
+                </p>
               </div>
 
             </div>
@@ -4783,6 +5433,10 @@ export default function App() {
             performanceMode={performanceMode}
             onTogglePerformance={() => setPerformanceMode((prev) => !prev)}
             audioAttribution={audioAttribution}
+            showInstallBanner={showInstallBanner}
+            installMode={installMode}
+            isInstalled={isStandalone}
+            onInstall={handleInstallClick}
           />
         </>
       )}

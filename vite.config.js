@@ -65,13 +65,11 @@ export default defineConfig(({ command }) => ({
       injectRegister: "auto",
       includeAssets: [
         "icons/*.png",
-        "icons/*.svg",
-        "mp3/*.mp3",
-        "midi/**/*"
+        "icons/*.svg"
       ],
       manifest: {
-        name: "Zen Tile Game",
-        short_name: "Zen Tile",
+        name: "ZENTō",
+        short_name: "ZENTō",
         description: "A calming tile-matching game.",
         theme_color: "#e8e0d6",
         background_color: "#fff7ea",
@@ -120,7 +118,7 @@ export default defineConfig(({ command }) => ({
       },
       workbox: {
         globPatterns: [
-          "**/*.{js,css,html,svg,ico,png,webmanifest,mp3,mid,midi}"
+          "**/*.{js,css,html,svg,ico,png,webmanifest}"
         ],
         runtimeCaching: [
           {

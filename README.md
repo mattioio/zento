@@ -5,7 +5,7 @@ Zen Tile Game built with Vite + React. Deployed under the `/zento/` base path (s
 1. `npm run dev` - local dev server
 2. `npm run build` - production build
 3. `npm run preview` - preview the production build locally
-4. `npm run deploy` - publish `dist/` to GitHub Pages
+4. Push to `main` - GitHub Actions builds and deploys to GitHub Pages
 
 **PWA**
 PWA support is provided by `vite-plugin-pwa`. The service worker is enabled in dev mode to allow offline testing.
