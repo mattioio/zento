@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRegisterSW } from "virtual:pwa-register/react";
+import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import loreAndOrderLogo from "./assets/loreandorder.svg";
 import bakedProgressionLevels from "./progressionLevels.json";
@@ -16,6 +16,7 @@ import {
   purchaseFullGame,
   restorePurchases
 } from "./entitlements.js";
+import { applyStatusBarForBackground, impactLight, impactMedium } from "./native.js";
 
 const ROWS = 10;
 const COLS = 6;
@@ -2438,7 +2439,7 @@ export default function App() {
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker
-  } = useRegisterSW();
+  } = usePwaRegister();
   const getEventContext = () => {
     const context = { screen, difficulty: difficultyLevels[difficultyIndex] };
     if (typeof window !== "undefined") {
@@ -2773,7 +2774,9 @@ export default function App() {
         "--board-bg"
       ].forEach((prop) => root.style.removeProperty(prop));
       applyContrastOverrides();
-      setMetaThemeColor(resolveThemeColor("#000000"));
+      const resolvedKind = resolveThemeColor("#000000");
+      setMetaThemeColor(resolvedKind);
+      applyStatusBarForBackground(resolvedKind);
       return;
     }
     root.removeAttribute("data-theme");
@@ -2814,7 +2817,9 @@ export default function App() {
     root.style.setProperty("--muted", blend(c4, "#2f2a24", 0.35));
     root.style.setProperty("--board-bg", "rgba(255, 255, 255, 0.1)");
     applyContrastOverrides();
-    setMetaThemeColor(resolveThemeColor(c1));
+    const resolvedBg = resolveThemeColor(c1);
+    setMetaThemeColor(resolvedBg);
+    applyStatusBarForBackground(resolvedBg);
   }, [themeIndex]);
 
   const connections = useMemo(() => computeConnections(tiles), [tiles]);
@@ -3605,6 +3610,7 @@ export default function App() {
 
   function rotateTile(index) {
     hasInteractedRef.current = true;
+    impactLight();
     if (showSuccess || waveActive) {
       cancelFinalAnimations();
     }
@@ -4075,6 +4081,7 @@ export default function App() {
         setShowFinalSuccess(isFinal);
         setSuccessMessage(nextMessage);
         setShowSuccess(true);
+        impactMedium();
       }, successDelay);
     }
     if (!solved && prevSolvedRef.current) {
