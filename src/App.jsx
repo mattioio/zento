@@ -1853,7 +1853,7 @@ function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy }) {
 }
 
 function InstallBanner({ mode, onInstall, isInstalled }) {
-  const title = "Play ZENTō offline";
+  const title = "Play Zento offline";
   const iconSrc = `${import.meta.env.BASE_URL}icons/icon-192.png`;
   const note =
     isInstalled
@@ -4272,7 +4272,7 @@ export default function App() {
       {showPaywall ? (
         <div className="modal-backdrop" onClick={closePaywall} role="dialog" aria-modal="true">
           <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <p className="modal-title">Unlock ZENTō</p>
+            <p className="modal-title">Unlock Zento</p>
             <p className="modal-subtitle">Continue your journey.</p>
             <div className="modal-section">
               <div className="modal-list">
@@ -4318,7 +4318,7 @@ export default function App() {
       {showAnalyticsBanner ? (
         <div className="analytics-banner" role="dialog" aria-live="polite">
           <div className="analytics-banner-copy">
-            <p className="analytics-banner-title">Help improve ZENTō</p>
+            <p className="analytics-banner-title">Help improve Zento</p>
             <p className="analytics-banner-note">
               Allow anonymous analytics so we can see device sizes and level completion. No
               personal data.
