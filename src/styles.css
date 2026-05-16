@@ -3808,3 +3808,16 @@ body.perf-mode::before {
     margin-left: auto;
   }
 }
+
+.purchases-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.paywall-inline-cta {
+  margin-top: 14px;
+  align-self: center;
+}
+

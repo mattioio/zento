@@ -11,10 +11,16 @@ import {
   setAnalyticsConsent as persistAnalyticsConsent,
   track
 } from "./analytics.js";
+import {
+  useHasFullGame,
+  purchaseFullGame,
+  restorePurchases
+} from "./entitlements.js";
 
 const ROWS = 10;
 const COLS = 6;
 const TOTAL_LEVELS = 96;
+const FREE_MAX_LEVEL = 13;
 const MIN_TILES = 4;
 
 const TILE_TYPES = [
@@ -1819,6 +1825,33 @@ function PrivacyCard({ onOpen }) {
   );
 }
 
+function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy }) {
+  return (
+    <div className="purchases-card theme-panel-card">
+      <div className="perf-row">
+        <div className="perf-copy">
+          <p className="perf-label">Purchases</p>
+          <p className="perf-note">
+            {hasFullGame
+              ? "You have the full game unlocked. Thank you."
+              : "Unlock all 96 levels and themes."}
+          </p>
+        </div>
+        <div className="purchases-actions">
+          {hasFullGame ? null : (
+            <button type="button" className="button" onClick={onUnlock} disabled={busy}>
+              Unlock
+            </button>
+          )}
+          <button type="button" className="button button-ghost" onClick={onRestore} disabled={busy}>
+            Restore
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InstallBanner({ mode, onInstall, isInstalled }) {
   const title = "Play ZENTō offline";
   const iconSrc = `${import.meta.env.BASE_URL}icons/icon-192.png`;
@@ -1989,7 +2022,11 @@ function ControlStack({
   analyticsConsent,
   onAllowAnalytics,
   onDenyAnalytics,
-  onOpenPrivacyPolicy
+  onOpenPrivacyPolicy,
+  hasFullGame,
+  onUnlock,
+  onRestore,
+  purchasesBusy
 }) {
   return (
     <section className="floating-controls">
@@ -2027,6 +2064,14 @@ function ControlStack({
         onAllow={onAllowAnalytics}
         onDeny={onDenyAnalytics}
       />
+      {onUnlock || onRestore ? (
+        <PurchasesCard
+          hasFullGame={hasFullGame}
+          onUnlock={onUnlock}
+          onRestore={onRestore}
+          busy={purchasesBusy}
+        />
+      ) : null}
       <PrivacyCard onOpen={onOpenPrivacyPolicy} />
       <div className="build-footer">
         <span>Made by</span>
@@ -2350,6 +2395,13 @@ export default function App() {
     if (!Number.isFinite(parsed) || parsed < 1) return 1;
     return Math.min(TOTAL_LEVELS, Math.floor(parsed));
   });
+  const hasFullGame = useHasFullGame();
+  const effectiveUnlockedLevel = hasFullGame
+    ? progressUnlockedLevel
+    : Math.min(progressUnlockedLevel, FREE_MAX_LEVEL);
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [paywallBusy, setPaywallBusy] = useState(false);
+  const [paywallError, setPaywallError] = useState(null);
   const initialRecentRandomThemes = useMemo(() => {
     try {
       const raw = storage.getItem("zen_recent_random_themes");
@@ -2421,6 +2473,44 @@ export default function App() {
   };
   const closePrivacyPolicy = () => {
     setShowPrivacyPolicy(false);
+  };
+  const openPaywall = () => {
+    setPaywallError(null);
+    setShowPaywall(true);
+    emitEvent("paywall_opened");
+  };
+  const closePaywall = () => {
+    if (paywallBusy) return;
+    setShowPaywall(false);
+  };
+  const handleUnlock = async () => {
+    if (paywallBusy) return;
+    setPaywallBusy(true);
+    setPaywallError(null);
+    try {
+      await purchaseFullGame();
+      emitEvent("purchase_completed");
+      setShowPaywall(false);
+    } catch (err) {
+      setPaywallError(err?.message || "Purchase failed. Please try again.");
+      emitEvent("purchase_failed");
+    } finally {
+      setPaywallBusy(false);
+    }
+  };
+  const handleRestore = async () => {
+    if (paywallBusy) return;
+    setPaywallBusy(true);
+    setPaywallError(null);
+    try {
+      await restorePurchases();
+      emitEvent("restore_completed");
+    } catch (err) {
+      setPaywallError(err?.message || "Restore failed. Please try again.");
+      emitEvent("restore_failed");
+    } finally {
+      setPaywallBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -3754,7 +3844,7 @@ export default function App() {
   const progressSeed = progressLevel?.seed ?? "";
   const nextProgressLevel = assignedLevels[progressCursor + 1] ?? null;
   const hasNextProgressLevel = Boolean(
-    nextProgressLevel && nextProgressLevel.level <= progressUnlockedLevel
+    nextProgressLevel && nextProgressLevel.level <= effectiveUnlockedLevel
   );
   const isProgressPlayable = isProgress && progressLevelsAvailable;
   const isBoardScreen = isEndless || isProgressPlayable;
@@ -3870,7 +3960,7 @@ export default function App() {
       if (assignedLevels.length > 0) {
         let targetIndex = -1;
         for (let i = assignedLevels.length - 1; i >= 0; i -= 1) {
-          if (assignedLevels[i].level <= progressUnlockedLevel) {
+          if (assignedLevels[i].level <= effectiveUnlockedLevel) {
             targetIndex = i;
             break;
           }
@@ -4179,6 +4269,52 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {showPaywall ? (
+        <div className="modal-backdrop" onClick={closePaywall} role="dialog" aria-modal="true">
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <p className="modal-title">Unlock ZENTō</p>
+            <p className="modal-subtitle">Continue your journey.</p>
+            <div className="modal-section">
+              <div className="modal-list">
+                <p className="modal-item">All 96 hand-tuned levels</p>
+                <p className="modal-item">Every unlockable theme</p>
+                <p className="modal-item">Harder endless complexity</p>
+              </div>
+            </div>
+            {paywallError ? (
+              <p className="modal-item" role="alert" style={{ color: "var(--accent-bad, #c33)" }}>
+                {paywallError}
+              </p>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button"
+                onClick={handleUnlock}
+                disabled={paywallBusy}
+              >
+                {paywallBusy ? "Unlocking…" : "Unlock for £0.99"}
+              </button>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={handleRestore}
+                disabled={paywallBusy}
+              >
+                Restore purchases
+              </button>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={closePaywall}
+                disabled={paywallBusy}
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {showAnalyticsBanner ? (
         <div className="analytics-banner" role="dialog" aria-live="polite">
           <div className="analytics-banner-copy">
@@ -4285,6 +4421,10 @@ export default function App() {
               onAllowAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.GRANTED)}
               onDenyAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.DENIED)}
               onOpenPrivacyPolicy={openPrivacyPolicy}
+              hasFullGame={hasFullGame}
+              onUnlock={openPaywall}
+              onRestore={handleRestore}
+              purchasesBusy={paywallBusy}
             />
             {builderUnlocked ? (
             <div className="home-builder">
@@ -5304,7 +5444,7 @@ export default function App() {
                         const level = index + 1;
                         const seed = progressionLevels[index];
                         const hasSeed = Boolean(seed);
-                        const isUnlocked = level <= progressUnlockedLevel;
+                        const isUnlocked = level <= effectiveUnlockedLevel;
                         const isComplete = progressCompletedSet.has(level);
                         const hasThemeUnlock = themeUnlockMap.has(level);
                         const themeUnlocked = hasThemeUnlock && isComplete;
@@ -5381,6 +5521,15 @@ export default function App() {
                         );
                       })}
                     </div>
+                    {!hasFullGame && progressUnlockedLevel >= FREE_MAX_LEVEL ? (
+                      <button
+                        type="button"
+                        className="button paywall-inline-cta"
+                        onClick={openPaywall}
+                      >
+                        Unlock all 96 levels for £0.99
+                      </button>
+                    ) : null}
                   </>
                 ) : (
                   <p className="builder-empty">No progress levels assigned yet.</p>
