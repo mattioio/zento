@@ -6,12 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:ios": "vite build && cap sync ios",
     "icons": "node scripts/generate-icons.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:contrast": "playwright test tests/contrast.spec.js"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
+    "@capacitor/ios": "^8.3.4",
     "posthog-js": "^1.342.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
