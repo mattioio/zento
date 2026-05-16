@@ -3,6 +3,7 @@ import { useRegisterSW } from "virtual:pwa-register/react";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import loreAndOrderLogo from "./assets/loreandorder.svg";
 import bakedProgressionLevels from "./progressionLevels.json";
+import { storage } from "./storage.js";
 import {
   ANALYTICS_CONSENT,
   getAnalyticsConsent,
@@ -2199,17 +2200,17 @@ export default function App() {
   ];
 
   const [themeIndex, setThemeIndex] = useState(() => {
-    const savedTheme = Number(localStorage.getItem("zen_theme_index"));
+    const savedTheme = Number(storage.getItem("zen_theme_index"));
     return Number.isNaN(savedTheme) ? 0 : Math.max(0, Math.min(savedTheme, themes.length - 1));
   });
   const [themeMode, setThemeMode] = useState(() => {
-    const savedMode = localStorage.getItem("zen_theme_mode");
+    const savedMode = storage.getItem("zen_theme_mode");
     return savedMode === "fixed" ? "fixed" : "random";
   });
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [themePickerMounted, setThemePickerMounted] = useState(false);
   const initialDifficultyIndex = (() => {
-    const savedDifficulty = localStorage.getItem("zen_difficulty");
+    const savedDifficulty = storage.getItem("zen_difficulty");
     const idx = difficultyLevels.indexOf(savedDifficulty);
     return idx === -1 ? 1 : idx;
   })();
@@ -2246,7 +2247,7 @@ export default function App() {
   const [successThemeApplied, setSuccessThemeApplied] = useState(false);
   const [successMessage, setSuccessMessage] = useState("Well done");
   const [performanceMode, setPerformanceMode] = useState(
-    () => localStorage.getItem("zen_performance_mode") === "on"
+    () => storage.getItem("zen_performance_mode") === "on"
   );
   const initialAnalyticsConsent = getAnalyticsConsent();
   const [analyticsConsent, setAnalyticsConsentState] = useState(initialAnalyticsConsent);
@@ -2258,7 +2259,7 @@ export default function App() {
   const builderUnlocked = import.meta.env.DEV;
   const [builderSettings, setBuilderSettings] = useState(() => {
     try {
-      const raw = localStorage.getItem("zen_progression_settings");
+      const raw = storage.getItem("zen_progression_settings");
       if (!raw) return DEFAULT_PROGRESSION_SETTINGS;
       const parsed = JSON.parse(raw);
       return normalizeProgressionSettings(parsed);
@@ -2275,7 +2276,7 @@ export default function App() {
   const [saveNotice, setSaveNotice] = useState(false);
   const [hasUnsavedLevels, setHasUnsavedLevels] = useState(() => {
     try {
-      const raw = localStorage.getItem("zen_progression_levels_draft");
+      const raw = storage.getItem("zen_progression_levels_draft");
       if (!raw) return false;
       const normalized = normalizeLevelList(JSON.parse(raw));
       return normalized.some((seed) => seed);
@@ -2288,7 +2289,7 @@ export default function App() {
   );
   const [seedParseError, setSeedParseError] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState(() => {
-    const raw = localStorage.getItem("zen_progression_levels_saved_at");
+    const raw = storage.getItem("zen_progression_levels_saved_at");
     const parsed = raw ? Number(raw) : NaN;
     return Number.isFinite(parsed) ? parsed : null;
   });
@@ -2296,7 +2297,7 @@ export default function App() {
   const [progressionLevels, setProgressionLevels] = useState(() => {
     const baked = normalizeLevelList(bakedProgressionLevels);
     try {
-      const draftRaw = localStorage.getItem("zen_progression_levels_draft");
+      const draftRaw = storage.getItem("zen_progression_levels_draft");
       if (draftRaw) {
         const parsed = JSON.parse(draftRaw);
         const normalized = normalizeLevelList(parsed);
@@ -2308,7 +2309,7 @@ export default function App() {
       // Ignore draft parsing failures.
     }
     try {
-      const raw = localStorage.getItem("zen_progression_levels");
+      const raw = storage.getItem("zen_progression_levels");
       if (raw) {
         const parsed = JSON.parse(raw);
         const normalized = normalizeLevelList(parsed);
@@ -2332,7 +2333,7 @@ export default function App() {
   const [showLevelPicker, setShowLevelPicker] = useState(false);
   const [progressCompletedLevels, setProgressCompletedLevels] = useState(() => {
     try {
-      const raw = localStorage.getItem("zen_progress_completed");
+      const raw = storage.getItem("zen_progress_completed");
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
@@ -2344,14 +2345,14 @@ export default function App() {
     }
   });
   const [progressUnlockedLevel, setProgressUnlockedLevel] = useState(() => {
-    const raw = localStorage.getItem("zen_progress_unlocked");
+    const raw = storage.getItem("zen_progress_unlocked");
     const parsed = raw ? Number(raw) : NaN;
     if (!Number.isFinite(parsed) || parsed < 1) return 1;
     return Math.min(TOTAL_LEVELS, Math.floor(parsed));
   });
   const initialRecentRandomThemes = useMemo(() => {
     try {
-      const raw = localStorage.getItem("zen_recent_random_themes");
+      const raw = storage.getItem("zen_recent_random_themes");
       const parsed = JSON.parse(raw ?? "[]");
       if (!Array.isArray(parsed)) return [];
       return parsed.filter((value) => Number.isInteger(value));
@@ -2423,7 +2424,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    localStorage.setItem("zen_theme_index", String(themeIndex));
+    storage.setItem("zen_theme_index", String(themeIndex));
   }, [themeIndex]);
 
   useEffect(() => {
@@ -2734,10 +2735,10 @@ export default function App() {
   }, [tiles, initialRotations]);
 
   useEffect(() => {
-    const savedRotate = Number(localStorage.getItem("zen_rotate_sound"));
-    const savedComplete = Number(localStorage.getItem("zen_complete_sound"));
-    const savedBgVolume = Number(localStorage.getItem("zen_bg_volume"));
-    const savedFxVolume = Number(localStorage.getItem("zen_fx_volume"));
+    const savedRotate = Number(storage.getItem("zen_rotate_sound"));
+    const savedComplete = Number(storage.getItem("zen_complete_sound"));
+    const savedBgVolume = Number(storage.getItem("zen_bg_volume"));
+    const savedFxVolume = Number(storage.getItem("zen_fx_volume"));
     if (!Number.isNaN(savedRotate)) setRotateSoundIndex(savedRotate);
     if (!Number.isNaN(savedComplete)) setCompleteSoundIndex(savedComplete);
     if (!Number.isNaN(savedBgVolume)) setBgVolume(savedBgVolume);
@@ -2745,19 +2746,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("zen_rotate_sound", String(rotateSoundIndex));
+    storage.setItem("zen_rotate_sound", String(rotateSoundIndex));
   }, [rotateSoundIndex]);
 
   useEffect(() => {
-    localStorage.setItem("zen_complete_sound", String(completeSoundIndex));
+    storage.setItem("zen_complete_sound", String(completeSoundIndex));
   }, [completeSoundIndex]);
 
   useEffect(() => {
-    localStorage.setItem("zen_bg_volume", String(bgVolume));
+    storage.setItem("zen_bg_volume", String(bgVolume));
   }, [bgVolume]);
 
   useEffect(() => {
-    localStorage.setItem("zen_fx_volume", String(fxVolume));
+    storage.setItem("zen_fx_volume", String(fxVolume));
   }, [fxVolume]);
 
   useEffect(() => {
@@ -2766,25 +2767,25 @@ export default function App() {
   }, [boardNoise, performanceMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_performance_mode", performanceMode ? "on" : "off");
+    storage.setItem("zen_performance_mode", performanceMode ? "on" : "off");
     document.body.classList.toggle("perf-mode", performanceMode);
     return () => document.body.classList.remove("perf-mode");
   }, [performanceMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_theme_mode", themeMode);
+    storage.setItem("zen_theme_mode", themeMode);
   }, [themeMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_progression_settings", JSON.stringify(builderSettings));
+    storage.setItem("zen_progression_settings", JSON.stringify(builderSettings));
   }, [builderSettings]);
 
   useEffect(() => {
-    localStorage.setItem("zen_progress_completed", JSON.stringify(progressCompletedLevels));
+    storage.setItem("zen_progress_completed", JSON.stringify(progressCompletedLevels));
   }, [progressCompletedLevels]);
 
   useEffect(() => {
-    localStorage.setItem("zen_progress_unlocked", String(progressUnlockedLevel));
+    storage.setItem("zen_progress_unlocked", String(progressUnlockedLevel));
   }, [progressUnlockedLevel]);
 
   const getNextRandomTheme = () => {
@@ -2801,13 +2802,13 @@ export default function App() {
     const pool = candidates.length > 0 ? candidates : eligible;
     const next = pool[Math.floor(Math.random() * pool.length)];
     recentRandomThemesRef.current = [next, ...recent].slice(0, 2);
-    localStorage.setItem("zen_recent_random_themes", JSON.stringify(recentRandomThemesRef.current));
+    storage.setItem("zen_recent_random_themes", JSON.stringify(recentRandomThemesRef.current));
     return next;
   };
 
   const clearRecentRandomThemes = () => {
     recentRandomThemesRef.current = [];
-    localStorage.removeItem("zen_recent_random_themes");
+    storage.removeItem("zen_recent_random_themes");
   };
 
   useEffect(() => {
@@ -2837,7 +2838,7 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_difficulty", difficultyLevels[difficultyIndex]);
+    storage.setItem("zen_difficulty", difficultyLevels[difficultyIndex]);
   }, [difficultyIndex]);
 
   useEffect(() => {
@@ -3375,8 +3376,8 @@ export default function App() {
     const levelsToSave = Array.isArray(levelsOverride) ? levelsOverride : progressionLevels;
     setIsBaking(true);
     try {
-      localStorage.setItem("zen_progression_levels", JSON.stringify(levelsToSave));
-      localStorage.removeItem("zen_progression_levels_draft");
+      storage.setItem("zen_progression_levels", JSON.stringify(levelsToSave));
+      storage.removeItem("zen_progression_levels_draft");
     } catch (err) {
       // Ignore persistence errors.
     }
@@ -3400,7 +3401,7 @@ export default function App() {
       const now = Date.now();
       setLastSavedAt(now);
       try {
-        localStorage.setItem("zen_progression_levels_saved_at", String(now));
+        storage.setItem("zen_progression_levels_saved_at", String(now));
       } catch (err) {
         // Ignore timestamp persistence errors.
       }
@@ -4024,7 +4025,7 @@ export default function App() {
     }
     setHasUnsavedLevels(true);
     try {
-      localStorage.setItem("zen_progression_levels_draft", JSON.stringify(progressionLevels));
+      storage.setItem("zen_progression_levels_draft", JSON.stringify(progressionLevels));
     } catch (err) {
       // Ignore draft persistence errors.
     }
