@@ -1,1 +1,0 @@
-if('serviceWorker' in navigator) navigator.serviceWorker.register('/zento/dev-sw.js?dev-sw', { scope: '/zento/', type: 'classic' })

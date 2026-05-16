@@ -1,5 +1,14 @@
 node_modules
-.dist
+dist
+dev-dist
 .DS_Store
 .env.local
 .env.*.local
+
+# iOS / Capacitor
+ios/App/Pods/
+ios/App/App/public/
+ios/App/build/
+ios/DerivedData/
+*.xcuserdata/
+
