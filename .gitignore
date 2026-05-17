@@ -12,3 +12,6 @@ ios/App/build/
 ios/DerivedData/
 *.xcuserdata/
 
+# App Store screenshot output (regeneratable from raw + script)
+screenshots/output/
+

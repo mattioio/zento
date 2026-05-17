@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:ios": "vite build && cap sync ios",
     "icons": "node scripts/generate-icons.mjs",
+    "screenshots": "node scripts/screenshots/compose.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:contrast": "playwright test tests/contrast.spec.js"
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",
     "@capacitor/assets": "^3.0.5",
+    "@fontsource/krona-one": "^5.2.8",
     "@playwright/test": "^1.58.2",
     "@vitejs/plugin-react": "^4.2.1",
     "sharp": "^0.34.5",
