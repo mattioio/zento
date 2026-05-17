@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { Purchases } from "@revenuecat/purchases-capacitor";
 import { useSyncExternalStore } from "react";
 import { storage } from "./storage.js";
 
@@ -51,19 +52,6 @@ export function setDevUnlock(unlocked) {
   applyState(unlocked || storage.getItem(CACHE_KEY) === "true");
 }
 
-let purchasesPromise = null;
-function loadPurchases() {
-  if (purchasesPromise) return purchasesPromise;
-  if (!isNative) return Promise.resolve(null);
-  purchasesPromise = import("@revenuecat/purchases-capacitor")
-    .then((m) => m.Purchases)
-    .catch((err) => {
-      console.error("RevenueCat import failed", err);
-      return null;
-    });
-  return purchasesPromise;
-}
-
 function hasUsableKey() {
   const key = import.meta.env.VITE_REVENUECAT_IOS_KEY;
   return typeof key === "string" && key.length > 0 && !key.includes("PLACEHOLDER");
@@ -75,8 +63,6 @@ export async function initRevenueCat() {
     console.warn("RevenueCat: no API key configured, skipping init");
     return;
   }
-  const Purchases = await loadPurchases();
-  if (!Purchases) return;
   try {
     await Purchases.configure({ apiKey: import.meta.env.VITE_REVENUECAT_IOS_KEY });
     await refreshEntitlements();
@@ -87,8 +73,6 @@ export async function initRevenueCat() {
 
 export async function refreshEntitlements() {
   if (!isNative || !hasUsableKey()) return;
-  const Purchases = await loadPurchases();
-  if (!Purchases) return;
   try {
     const { customerInfo } = await Purchases.getCustomerInfo();
     const isActive = Boolean(customerInfo?.entitlements?.active?.[ENTITLEMENT_ID]);
@@ -103,8 +87,6 @@ export async function purchaseFullGame() {
   if (!isNative || !hasUsableKey()) {
     throw new Error("Purchases unavailable in this environment");
   }
-  const Purchases = await loadPurchases();
-  if (!Purchases) throw new Error("Purchases plugin failed to load");
   const { current } = await Purchases.getOfferings();
   if (!current) throw new Error("No offering configured in RevenueCat");
   const pkg = current.availablePackages?.[0];
@@ -117,8 +99,6 @@ export async function restorePurchases() {
   if (!isNative || !hasUsableKey()) {
     throw new Error("Restore unavailable in this environment");
   }
-  const Purchases = await loadPurchases();
-  if (!Purchases) throw new Error("Purchases plugin failed to load");
   await Purchases.restorePurchases();
   await refreshEntitlements();
 }
