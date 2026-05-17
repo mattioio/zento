@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import loreAndOrderLogo from "./assets/loreandorder.svg";
@@ -4196,7 +4197,7 @@ export default function App() {
   };
   const isBgPaused = bgIsPaused;
   const isBgLoading = bgIsLoading;
-  const showInstallBanner = !isStandalone;
+  const showInstallBanner = !isStandalone && !Capacitor.isNativePlatform();
   const isDevBuild = import.meta.env.DEV;
   const installMode = installPromptEvent ? "prompt" : isIOS ? "ios" : "unavailable";
   const handleInstallClick = async () => {
