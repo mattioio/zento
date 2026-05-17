@@ -14,15 +14,22 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.3.4",
+    "@capacitor/app": "^8.1.0",
     "@capacitor/cli": "^8.3.4",
     "@capacitor/core": "^8.3.4",
+    "@capacitor/haptics": "^8.0.2",
     "@capacitor/ios": "^8.3.4",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.2",
+    "@revenuecat/purchases-capacitor": "^13.1.1",
     "posthog-js": "^1.342.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",
+    "@capacitor/assets": "^3.0.5",
     "@playwright/test": "^1.58.2",
     "@vitejs/plugin-react": "^4.2.1",
     "sharp": "^0.34.5",

@@ -1,3 +1,5 @@
+import { storage } from "./storage.js";
+
 const CONSENT_KEY = "zen_analytics_consent";
 const CONSENT_GRANTED = "granted";
 const CONSENT_DENIED = "denied";
@@ -16,7 +18,7 @@ const getConfig = () => {
 
 export function getAnalyticsConsent() {
   try {
-    return localStorage.getItem(CONSENT_KEY);
+    return storage.getItem(CONSENT_KEY);
   } catch (err) {
     return null;
   }
@@ -24,7 +26,7 @@ export function getAnalyticsConsent() {
 
 export function setAnalyticsConsent(next) {
   try {
-    localStorage.setItem(CONSENT_KEY, next);
+    storage.setItem(CONSENT_KEY, next);
   } catch (err) {
     // Ignore persistence errors.
   }

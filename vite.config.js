@@ -68,8 +68,8 @@ export default defineConfig(({ command }) => ({
         "icons/*.svg"
       ],
       manifest: {
-        name: "ZENTō",
-        short_name: "ZENTō",
+        name: "Zento",
+        short_name: "Zento",
         description: "A calming tile-matching game.",
         theme_color: "#e8e0d6",
         background_color: "#fff7ea",

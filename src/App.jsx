@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRegisterSW } from "virtual:pwa-register/react";
+import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import loreAndOrderLogo from "./assets/loreandorder.svg";
 import bakedProgressionLevels from "./progressionLevels.json";
+import { storage } from "./storage.js";
 import {
   ANALYTICS_CONSENT,
   getAnalyticsConsent,
@@ -10,10 +11,17 @@ import {
   setAnalyticsConsent as persistAnalyticsConsent,
   track
 } from "./analytics.js";
+import {
+  useHasFullGame,
+  purchaseFullGame,
+  restorePurchases
+} from "./entitlements.js";
+import { applyStatusBarForBackground, impactLight, impactMedium } from "./native.js";
 
 const ROWS = 10;
 const COLS = 6;
 const TOTAL_LEVELS = 96;
+const FREE_MAX_LEVEL = 13;
 const MIN_TILES = 4;
 
 const TILE_TYPES = [
@@ -1818,8 +1826,35 @@ function PrivacyCard({ onOpen }) {
   );
 }
 
+function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy }) {
+  return (
+    <div className="purchases-card theme-panel-card">
+      <div className="perf-row">
+        <div className="perf-copy">
+          <p className="perf-label">Purchases</p>
+          <p className="perf-note">
+            {hasFullGame
+              ? "You have the full game unlocked. Thank you."
+              : "Unlock all 96 levels and themes."}
+          </p>
+        </div>
+        <div className="purchases-actions">
+          {hasFullGame ? null : (
+            <button type="button" className="button" onClick={onUnlock} disabled={busy}>
+              Unlock
+            </button>
+          )}
+          <button type="button" className="button button-ghost" onClick={onRestore} disabled={busy}>
+            Restore
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InstallBanner({ mode, onInstall, isInstalled }) {
-  const title = "Play ZENTō offline";
+  const title = "Play Zento offline";
   const iconSrc = `${import.meta.env.BASE_URL}icons/icon-192.png`;
   const note =
     isInstalled
@@ -1988,7 +2023,11 @@ function ControlStack({
   analyticsConsent,
   onAllowAnalytics,
   onDenyAnalytics,
-  onOpenPrivacyPolicy
+  onOpenPrivacyPolicy,
+  hasFullGame,
+  onUnlock,
+  onRestore,
+  purchasesBusy
 }) {
   return (
     <section className="floating-controls">
@@ -2026,6 +2065,14 @@ function ControlStack({
         onAllow={onAllowAnalytics}
         onDeny={onDenyAnalytics}
       />
+      {onUnlock || onRestore ? (
+        <PurchasesCard
+          hasFullGame={hasFullGame}
+          onUnlock={onUnlock}
+          onRestore={onRestore}
+          busy={purchasesBusy}
+        />
+      ) : null}
       <PrivacyCard onOpen={onOpenPrivacyPolicy} />
       <div className="build-footer">
         <span>Made by</span>
@@ -2199,17 +2246,17 @@ export default function App() {
   ];
 
   const [themeIndex, setThemeIndex] = useState(() => {
-    const savedTheme = Number(localStorage.getItem("zen_theme_index"));
+    const savedTheme = Number(storage.getItem("zen_theme_index"));
     return Number.isNaN(savedTheme) ? 0 : Math.max(0, Math.min(savedTheme, themes.length - 1));
   });
   const [themeMode, setThemeMode] = useState(() => {
-    const savedMode = localStorage.getItem("zen_theme_mode");
+    const savedMode = storage.getItem("zen_theme_mode");
     return savedMode === "fixed" ? "fixed" : "random";
   });
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [themePickerMounted, setThemePickerMounted] = useState(false);
   const initialDifficultyIndex = (() => {
-    const savedDifficulty = localStorage.getItem("zen_difficulty");
+    const savedDifficulty = storage.getItem("zen_difficulty");
     const idx = difficultyLevels.indexOf(savedDifficulty);
     return idx === -1 ? 1 : idx;
   })();
@@ -2246,7 +2293,7 @@ export default function App() {
   const [successThemeApplied, setSuccessThemeApplied] = useState(false);
   const [successMessage, setSuccessMessage] = useState("Well done");
   const [performanceMode, setPerformanceMode] = useState(
-    () => localStorage.getItem("zen_performance_mode") === "on"
+    () => storage.getItem("zen_performance_mode") === "on"
   );
   const initialAnalyticsConsent = getAnalyticsConsent();
   const [analyticsConsent, setAnalyticsConsentState] = useState(initialAnalyticsConsent);
@@ -2258,7 +2305,7 @@ export default function App() {
   const builderUnlocked = import.meta.env.DEV;
   const [builderSettings, setBuilderSettings] = useState(() => {
     try {
-      const raw = localStorage.getItem("zen_progression_settings");
+      const raw = storage.getItem("zen_progression_settings");
       if (!raw) return DEFAULT_PROGRESSION_SETTINGS;
       const parsed = JSON.parse(raw);
       return normalizeProgressionSettings(parsed);
@@ -2275,7 +2322,7 @@ export default function App() {
   const [saveNotice, setSaveNotice] = useState(false);
   const [hasUnsavedLevels, setHasUnsavedLevels] = useState(() => {
     try {
-      const raw = localStorage.getItem("zen_progression_levels_draft");
+      const raw = storage.getItem("zen_progression_levels_draft");
       if (!raw) return false;
       const normalized = normalizeLevelList(JSON.parse(raw));
       return normalized.some((seed) => seed);
@@ -2288,7 +2335,7 @@ export default function App() {
   );
   const [seedParseError, setSeedParseError] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState(() => {
-    const raw = localStorage.getItem("zen_progression_levels_saved_at");
+    const raw = storage.getItem("zen_progression_levels_saved_at");
     const parsed = raw ? Number(raw) : NaN;
     return Number.isFinite(parsed) ? parsed : null;
   });
@@ -2296,7 +2343,7 @@ export default function App() {
   const [progressionLevels, setProgressionLevels] = useState(() => {
     const baked = normalizeLevelList(bakedProgressionLevels);
     try {
-      const draftRaw = localStorage.getItem("zen_progression_levels_draft");
+      const draftRaw = storage.getItem("zen_progression_levels_draft");
       if (draftRaw) {
         const parsed = JSON.parse(draftRaw);
         const normalized = normalizeLevelList(parsed);
@@ -2308,7 +2355,7 @@ export default function App() {
       // Ignore draft parsing failures.
     }
     try {
-      const raw = localStorage.getItem("zen_progression_levels");
+      const raw = storage.getItem("zen_progression_levels");
       if (raw) {
         const parsed = JSON.parse(raw);
         const normalized = normalizeLevelList(parsed);
@@ -2332,7 +2379,7 @@ export default function App() {
   const [showLevelPicker, setShowLevelPicker] = useState(false);
   const [progressCompletedLevels, setProgressCompletedLevels] = useState(() => {
     try {
-      const raw = localStorage.getItem("zen_progress_completed");
+      const raw = storage.getItem("zen_progress_completed");
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
@@ -2344,14 +2391,21 @@ export default function App() {
     }
   });
   const [progressUnlockedLevel, setProgressUnlockedLevel] = useState(() => {
-    const raw = localStorage.getItem("zen_progress_unlocked");
+    const raw = storage.getItem("zen_progress_unlocked");
     const parsed = raw ? Number(raw) : NaN;
     if (!Number.isFinite(parsed) || parsed < 1) return 1;
     return Math.min(TOTAL_LEVELS, Math.floor(parsed));
   });
+  const hasFullGame = useHasFullGame();
+  const effectiveUnlockedLevel = hasFullGame
+    ? progressUnlockedLevel
+    : Math.min(progressUnlockedLevel, FREE_MAX_LEVEL);
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [paywallBusy, setPaywallBusy] = useState(false);
+  const [paywallError, setPaywallError] = useState(null);
   const initialRecentRandomThemes = useMemo(() => {
     try {
-      const raw = localStorage.getItem("zen_recent_random_themes");
+      const raw = storage.getItem("zen_recent_random_themes");
       const parsed = JSON.parse(raw ?? "[]");
       if (!Array.isArray(parsed)) return [];
       return parsed.filter((value) => Number.isInteger(value));
@@ -2385,7 +2439,7 @@ export default function App() {
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker
-  } = useRegisterSW();
+  } = usePwaRegister();
   const getEventContext = () => {
     const context = { screen, difficulty: difficultyLevels[difficultyIndex] };
     if (typeof window !== "undefined") {
@@ -2421,9 +2475,47 @@ export default function App() {
   const closePrivacyPolicy = () => {
     setShowPrivacyPolicy(false);
   };
+  const openPaywall = () => {
+    setPaywallError(null);
+    setShowPaywall(true);
+    emitEvent("paywall_opened");
+  };
+  const closePaywall = () => {
+    if (paywallBusy) return;
+    setShowPaywall(false);
+  };
+  const handleUnlock = async () => {
+    if (paywallBusy) return;
+    setPaywallBusy(true);
+    setPaywallError(null);
+    try {
+      await purchaseFullGame();
+      emitEvent("purchase_completed");
+      setShowPaywall(false);
+    } catch (err) {
+      setPaywallError(err?.message || "Purchase failed. Please try again.");
+      emitEvent("purchase_failed");
+    } finally {
+      setPaywallBusy(false);
+    }
+  };
+  const handleRestore = async () => {
+    if (paywallBusy) return;
+    setPaywallBusy(true);
+    setPaywallError(null);
+    try {
+      await restorePurchases();
+      emitEvent("restore_completed");
+    } catch (err) {
+      setPaywallError(err?.message || "Restore failed. Please try again.");
+      emitEvent("restore_failed");
+    } finally {
+      setPaywallBusy(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem("zen_theme_index", String(themeIndex));
+    storage.setItem("zen_theme_index", String(themeIndex));
   }, [themeIndex]);
 
   useEffect(() => {
@@ -2682,7 +2774,9 @@ export default function App() {
         "--board-bg"
       ].forEach((prop) => root.style.removeProperty(prop));
       applyContrastOverrides();
-      setMetaThemeColor(resolveThemeColor("#000000"));
+      const resolvedKind = resolveThemeColor("#000000");
+      setMetaThemeColor(resolvedKind);
+      applyStatusBarForBackground(resolvedKind);
       return;
     }
     root.removeAttribute("data-theme");
@@ -2723,7 +2817,9 @@ export default function App() {
     root.style.setProperty("--muted", blend(c4, "#2f2a24", 0.35));
     root.style.setProperty("--board-bg", "rgba(255, 255, 255, 0.1)");
     applyContrastOverrides();
-    setMetaThemeColor(resolveThemeColor(c1));
+    const resolvedBg = resolveThemeColor(c1);
+    setMetaThemeColor(resolvedBg);
+    applyStatusBarForBackground(resolvedBg);
   }, [themeIndex]);
 
   const connections = useMemo(() => computeConnections(tiles), [tiles]);
@@ -2734,10 +2830,10 @@ export default function App() {
   }, [tiles, initialRotations]);
 
   useEffect(() => {
-    const savedRotate = Number(localStorage.getItem("zen_rotate_sound"));
-    const savedComplete = Number(localStorage.getItem("zen_complete_sound"));
-    const savedBgVolume = Number(localStorage.getItem("zen_bg_volume"));
-    const savedFxVolume = Number(localStorage.getItem("zen_fx_volume"));
+    const savedRotate = Number(storage.getItem("zen_rotate_sound"));
+    const savedComplete = Number(storage.getItem("zen_complete_sound"));
+    const savedBgVolume = Number(storage.getItem("zen_bg_volume"));
+    const savedFxVolume = Number(storage.getItem("zen_fx_volume"));
     if (!Number.isNaN(savedRotate)) setRotateSoundIndex(savedRotate);
     if (!Number.isNaN(savedComplete)) setCompleteSoundIndex(savedComplete);
     if (!Number.isNaN(savedBgVolume)) setBgVolume(savedBgVolume);
@@ -2745,19 +2841,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("zen_rotate_sound", String(rotateSoundIndex));
+    storage.setItem("zen_rotate_sound", String(rotateSoundIndex));
   }, [rotateSoundIndex]);
 
   useEffect(() => {
-    localStorage.setItem("zen_complete_sound", String(completeSoundIndex));
+    storage.setItem("zen_complete_sound", String(completeSoundIndex));
   }, [completeSoundIndex]);
 
   useEffect(() => {
-    localStorage.setItem("zen_bg_volume", String(bgVolume));
+    storage.setItem("zen_bg_volume", String(bgVolume));
   }, [bgVolume]);
 
   useEffect(() => {
-    localStorage.setItem("zen_fx_volume", String(fxVolume));
+    storage.setItem("zen_fx_volume", String(fxVolume));
   }, [fxVolume]);
 
   useEffect(() => {
@@ -2766,25 +2862,25 @@ export default function App() {
   }, [boardNoise, performanceMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_performance_mode", performanceMode ? "on" : "off");
+    storage.setItem("zen_performance_mode", performanceMode ? "on" : "off");
     document.body.classList.toggle("perf-mode", performanceMode);
     return () => document.body.classList.remove("perf-mode");
   }, [performanceMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_theme_mode", themeMode);
+    storage.setItem("zen_theme_mode", themeMode);
   }, [themeMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_progression_settings", JSON.stringify(builderSettings));
+    storage.setItem("zen_progression_settings", JSON.stringify(builderSettings));
   }, [builderSettings]);
 
   useEffect(() => {
-    localStorage.setItem("zen_progress_completed", JSON.stringify(progressCompletedLevels));
+    storage.setItem("zen_progress_completed", JSON.stringify(progressCompletedLevels));
   }, [progressCompletedLevels]);
 
   useEffect(() => {
-    localStorage.setItem("zen_progress_unlocked", String(progressUnlockedLevel));
+    storage.setItem("zen_progress_unlocked", String(progressUnlockedLevel));
   }, [progressUnlockedLevel]);
 
   const getNextRandomTheme = () => {
@@ -2801,13 +2897,13 @@ export default function App() {
     const pool = candidates.length > 0 ? candidates : eligible;
     const next = pool[Math.floor(Math.random() * pool.length)];
     recentRandomThemesRef.current = [next, ...recent].slice(0, 2);
-    localStorage.setItem("zen_recent_random_themes", JSON.stringify(recentRandomThemesRef.current));
+    storage.setItem("zen_recent_random_themes", JSON.stringify(recentRandomThemesRef.current));
     return next;
   };
 
   const clearRecentRandomThemes = () => {
     recentRandomThemesRef.current = [];
-    localStorage.removeItem("zen_recent_random_themes");
+    storage.removeItem("zen_recent_random_themes");
   };
 
   useEffect(() => {
@@ -2837,7 +2933,7 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
-    localStorage.setItem("zen_difficulty", difficultyLevels[difficultyIndex]);
+    storage.setItem("zen_difficulty", difficultyLevels[difficultyIndex]);
   }, [difficultyIndex]);
 
   useEffect(() => {
@@ -3375,8 +3471,8 @@ export default function App() {
     const levelsToSave = Array.isArray(levelsOverride) ? levelsOverride : progressionLevels;
     setIsBaking(true);
     try {
-      localStorage.setItem("zen_progression_levels", JSON.stringify(levelsToSave));
-      localStorage.removeItem("zen_progression_levels_draft");
+      storage.setItem("zen_progression_levels", JSON.stringify(levelsToSave));
+      storage.removeItem("zen_progression_levels_draft");
     } catch (err) {
       // Ignore persistence errors.
     }
@@ -3400,7 +3496,7 @@ export default function App() {
       const now = Date.now();
       setLastSavedAt(now);
       try {
-        localStorage.setItem("zen_progression_levels_saved_at", String(now));
+        storage.setItem("zen_progression_levels_saved_at", String(now));
       } catch (err) {
         // Ignore timestamp persistence errors.
       }
@@ -3514,6 +3610,7 @@ export default function App() {
 
   function rotateTile(index) {
     hasInteractedRef.current = true;
+    impactLight();
     if (showSuccess || waveActive) {
       cancelFinalAnimations();
     }
@@ -3753,7 +3850,7 @@ export default function App() {
   const progressSeed = progressLevel?.seed ?? "";
   const nextProgressLevel = assignedLevels[progressCursor + 1] ?? null;
   const hasNextProgressLevel = Boolean(
-    nextProgressLevel && nextProgressLevel.level <= progressUnlockedLevel
+    nextProgressLevel && nextProgressLevel.level <= effectiveUnlockedLevel
   );
   const isProgressPlayable = isProgress && progressLevelsAvailable;
   const isBoardScreen = isEndless || isProgressPlayable;
@@ -3869,7 +3966,7 @@ export default function App() {
       if (assignedLevels.length > 0) {
         let targetIndex = -1;
         for (let i = assignedLevels.length - 1; i >= 0; i -= 1) {
-          if (assignedLevels[i].level <= progressUnlockedLevel) {
+          if (assignedLevels[i].level <= effectiveUnlockedLevel) {
             targetIndex = i;
             break;
           }
@@ -3984,6 +4081,7 @@ export default function App() {
         setShowFinalSuccess(isFinal);
         setSuccessMessage(nextMessage);
         setShowSuccess(true);
+        impactMedium();
       }, successDelay);
     }
     if (!solved && prevSolvedRef.current) {
@@ -4024,7 +4122,7 @@ export default function App() {
     }
     setHasUnsavedLevels(true);
     try {
-      localStorage.setItem("zen_progression_levels_draft", JSON.stringify(progressionLevels));
+      storage.setItem("zen_progression_levels_draft", JSON.stringify(progressionLevels));
     } catch (err) {
       // Ignore draft persistence errors.
     }
@@ -4178,10 +4276,56 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {showPaywall ? (
+        <div className="modal-backdrop" onClick={closePaywall} role="dialog" aria-modal="true">
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <p className="modal-title">Unlock Zento</p>
+            <p className="modal-subtitle">Continue your journey.</p>
+            <div className="modal-section">
+              <div className="modal-list">
+                <p className="modal-item">All 96 hand-tuned levels</p>
+                <p className="modal-item">Every unlockable theme</p>
+                <p className="modal-item">Harder endless complexity</p>
+              </div>
+            </div>
+            {paywallError ? (
+              <p className="modal-item" role="alert" style={{ color: "var(--accent-bad, #c33)" }}>
+                {paywallError}
+              </p>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button"
+                onClick={handleUnlock}
+                disabled={paywallBusy}
+              >
+                {paywallBusy ? "Unlocking…" : "Unlock for £0.99"}
+              </button>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={handleRestore}
+                disabled={paywallBusy}
+              >
+                Restore purchases
+              </button>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={closePaywall}
+                disabled={paywallBusy}
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {showAnalyticsBanner ? (
         <div className="analytics-banner" role="dialog" aria-live="polite">
           <div className="analytics-banner-copy">
-            <p className="analytics-banner-title">Help improve ZENTō</p>
+            <p className="analytics-banner-title">Help improve Zento</p>
             <p className="analytics-banner-note">
               Allow anonymous analytics so we can see device sizes and level completion. No
               personal data.
@@ -4284,6 +4428,10 @@ export default function App() {
               onAllowAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.GRANTED)}
               onDenyAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.DENIED)}
               onOpenPrivacyPolicy={openPrivacyPolicy}
+              hasFullGame={hasFullGame}
+              onUnlock={openPaywall}
+              onRestore={handleRestore}
+              purchasesBusy={paywallBusy}
             />
             {builderUnlocked ? (
             <div className="home-builder">
@@ -5303,7 +5451,7 @@ export default function App() {
                         const level = index + 1;
                         const seed = progressionLevels[index];
                         const hasSeed = Boolean(seed);
-                        const isUnlocked = level <= progressUnlockedLevel;
+                        const isUnlocked = level <= effectiveUnlockedLevel;
                         const isComplete = progressCompletedSet.has(level);
                         const hasThemeUnlock = themeUnlockMap.has(level);
                         const themeUnlocked = hasThemeUnlock && isComplete;
@@ -5380,6 +5528,15 @@ export default function App() {
                         );
                       })}
                     </div>
+                    {!hasFullGame && progressUnlockedLevel >= FREE_MAX_LEVEL ? (
+                      <button
+                        type="button"
+                        className="button paywall-inline-cta"
+                        onClick={openPaywall}
+                      >
+                        Unlock all 96 levels for £0.99
+                      </button>
+                    ) : null}
                   </>
                 ) : (
                   <p className="builder-empty">No progress levels assigned yet.</p>
