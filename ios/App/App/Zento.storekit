@@ -1,0 +1,43 @@
+{
+  "identifier" : "482D434E-5D11-44D1-892C-4068F82615FC",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : false,
+      "internalID" : "300F3614-8EAF-4EE5-807B-1A542441D8B4",
+      "localizations" : [
+        {
+          "description" : "All 96 hand-tuned levels, every theme, hard endless mode.",
+          "displayName" : "Unlock the full game",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "io.mattio.zento.fullgame",
+      "referenceName" : "Full Game Unlock",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      }
+    ]
+  },
+  "subscriptionGroups" : [],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
