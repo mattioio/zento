@@ -14,10 +14,16 @@ function readDevOverride() {
 }
 
 let state = readDevOverride() || storage.getItem(CACHE_KEY) === "true";
+let priceString = null;
 const listeners = new Set();
+const priceListeners = new Set();
 
 function notify() {
   for (const l of listeners) l();
+}
+
+function notifyPrice() {
+  for (const l of priceListeners) l();
 }
 
 function applyState(next) {
@@ -26,17 +32,36 @@ function applyState(next) {
   notify();
 }
 
+function applyPrice(next) {
+  if (next === priceString) return;
+  priceString = next;
+  notifyPrice();
+}
+
 function subscribe(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+function subscribePrice(listener) {
+  priceListeners.add(listener);
+  return () => priceListeners.delete(listener);
 }
 
 function getSnapshot() {
   return state;
 }
 
+function getPriceSnapshot() {
+  return priceString;
+}
+
 export function useHasFullGame() {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function usePriceString() {
+  return useSyncExternalStore(subscribePrice, getPriceSnapshot, getPriceSnapshot);
 }
 
 export function getHasFullGame() {
@@ -66,8 +91,20 @@ export async function initRevenueCat() {
   try {
     await Purchases.configure({ apiKey: import.meta.env.VITE_REVENUECAT_IOS_KEY });
     await refreshEntitlements();
+    await refreshOfferingPrice();
   } catch (err) {
     console.error("RevenueCat configure failed", err);
+  }
+}
+
+async function refreshOfferingPrice() {
+  if (!isNative || !hasUsableKey()) return;
+  try {
+    const { current } = await Purchases.getOfferings();
+    const pkg = current?.availablePackages?.[0];
+    applyPrice(pkg?.product?.priceString ?? null);
+  } catch (err) {
+    console.error("RevenueCat getOfferings failed", err);
   }
 }
 
