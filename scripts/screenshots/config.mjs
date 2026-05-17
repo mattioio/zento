@@ -46,7 +46,11 @@ export const SHOTS = [
     headline: "Calming piano.\nNo timer. No score.",
     gradient: ["#d8dcef", "#a8b0cf"],
     headlineColor: "#1d233a",
-    tilt: -4
+    // Lift just the Now Playing card out of the screenshot and float it
+    // on the gradient (no phone frame). Adjust crop if the card's
+    // position shifts in your capture.
+    layout: "element",
+    crop: { left: 40, top: 743, width: 1110, height: 600 }
   }
 ];
 

@@ -68,18 +68,95 @@ function svgHeadline({ text, color, x, y, fontSize, font }) {
   `;
 }
 
-async function composeOne(shot, target) {
-  const rawPath = path.join(RAW_DIR, shot.raw);
-  let rawBuffer;
-  try {
-    rawBuffer = await fs.readFile(rawPath);
-  } catch {
-    console.warn(`⚠️  ${shot.raw} not found in screenshots/raw/, skipping ${shot.id}`);
-    return;
-  }
-  const rawMeta = await sharp(rawBuffer).metadata();
-
+async function composeElement(shot, target, rawBuffer) {
   const { width: canvasW, height: canvasH } = target;
+  const meta = await sharp(rawBuffer).metadata();
+
+  // Crop region in input pixels (defaults to the full image).
+  const crop = shot.crop || { left: 0, top: 0, width: meta.width, height: meta.height };
+  const cropped = await sharp(rawBuffer)
+    .extract({
+      left: Math.max(0, crop.left | 0),
+      top: Math.max(0, crop.top | 0),
+      width: Math.min(meta.width - crop.left, crop.width | 0),
+      height: Math.min(meta.height - crop.top, crop.height | 0)
+    })
+    .png()
+    .toBuffer();
+  const croppedMeta = await sharp(cropped).metadata();
+
+  // Scale element to a comfortable width on the canvas.
+  const elementWidth = Math.round(canvasW * 0.84);
+  const elementHeight = Math.round((croppedMeta.height / croppedMeta.width) * elementWidth);
+  const elementResized = await sharp(cropped)
+    .resize(elementWidth, elementHeight, { fit: "fill" })
+    .png()
+    .toBuffer();
+  const elementB64 = elementResized.toString("base64");
+
+  const elementCornerR = Math.round(elementWidth * 0.06);
+  const elementCx = canvasW / 2;
+  const elementCy = canvasH * 0.6;
+
+  const headlineFont = Math.round(canvasH * HEADLINE_FONT_FRACTION);
+  const headlineY = Math.round(canvasH * HEADLINE_TOP_FRACTION) + headlineFont;
+
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${shot.gradient[0]}"/>
+      <stop offset="100%" stop-color="${shot.gradient[1]}"/>
+    </linearGradient>
+    <clipPath id="elementClip">
+      <rect x="${-elementWidth / 2}" y="${-elementHeight / 2}" width="${elementWidth}" height="${elementHeight}" rx="${elementCornerR}" ry="${elementCornerR}"/>
+    </clipPath>
+    <filter id="elementShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="${Math.round(elementWidth * 0.025)}"/>
+      <feOffset dx="0" dy="${Math.round(elementWidth * 0.018)}" result="offsetblur"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.22"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+
+  ${svgHeadline({
+    text: shot.headline,
+    color: shot.headlineColor,
+    x: canvasW / 2,
+    y: headlineY,
+    fontSize: headlineFont,
+    font: FONT_HEADLINE
+  })}
+
+  <g transform="translate(${elementCx} ${elementCy})">
+    <rect
+      x="${-elementWidth / 2}" y="${-elementHeight / 2}"
+      width="${elementWidth}" height="${elementHeight}"
+      rx="${elementCornerR}" ry="${elementCornerR}"
+      fill="#ffffff" fill-opacity="0.001"
+      filter="url(#elementShadow)"
+    />
+    <g clip-path="url(#elementClip)">
+      <image
+        x="${-elementWidth / 2}" y="${-elementHeight / 2}"
+        width="${elementWidth}" height="${elementHeight}"
+        href="data:image/png;base64,${elementB64}"
+        preserveAspectRatio="xMidYMid slice"
+      />
+    </g>
+  </g>
+</svg>`;
+
+  return svg;
+}
+
+async function composePhone(shot, target, rawBuffer) {
+  const { width: canvasW, height: canvasH } = target;
+  const rawMeta = await sharp(rawBuffer).metadata();
+  // Reference rawMeta to avoid unused-var noise; used here for clarity if logging needs it.
+  void rawMeta;
 
   // Phone geometry on this canvas.
   const phoneW = Math.round(canvasW * PHONE_WIDTH_FRACTION);
@@ -167,14 +244,28 @@ async function composeOne(shot, target) {
   </g>
 </svg>`;
 
+  return svg;
+}
+
+async function composeOne(shot, target) {
+  const rawPath = path.join(RAW_DIR, shot.raw);
+  let rawBuffer;
+  try {
+    rawBuffer = await fs.readFile(rawPath);
+  } catch {
+    console.warn(`⚠️  ${shot.raw} not found in screenshots/raw/, skipping ${shot.id}`);
+    return;
+  }
+  const svg =
+    shot.layout === "element"
+      ? await composeElement(shot, target, rawBuffer)
+      : await composePhone(shot, target, rawBuffer);
   const outDir = path.join(OUT_DIR, target.id);
   await fs.mkdir(outDir, { recursive: true });
   const outPath = path.join(outDir, `${shot.id}.png`);
   await sharp(Buffer.from(svg)).png({ compressionLevel: 9 }).toFile(outPath);
   const stat = await fs.stat(outPath);
-  console.log(
-    `✓ ${target.id}/${shot.id}.png  (raw ${rawMeta.width}×${rawMeta.height} → ${canvasW}×${canvasH}, ${(stat.size / 1024).toFixed(0)} KB)`
-  );
+  console.log(`✓ ${target.id}/${shot.id}.png  (${(stat.size / 1024).toFixed(0)} KB, layout=${shot.layout || "phone"})`);
 }
 
 async function main() {
