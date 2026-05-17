@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import loreAndOrderLogo from "./assets/loreandorder.svg";
@@ -17,7 +18,7 @@ import {
   purchaseFullGame,
   restorePurchases
 } from "./entitlements.js";
-import { applyStatusBarForBackground, impactLight, impactMedium } from "./native.js";
+import { applyStatusBarForBackground, impactLight, impactMedium, openExternal } from "./native.js";
 
 const ROWS = 10;
 const COLS = 6;
@@ -1922,7 +1923,16 @@ function CreditsFooter({ audioAttribution }) {
       {audioAttribution.map((item) => (
         <span key={item.source}>
           {item.source} — {item.license} (
-          <a className="modal-link" href={item.url} target="_blank" rel="noreferrer">
+          <a
+            className="modal-link"
+            href={item.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              openExternal(item.url);
+            }}
+          >
             source
           </a>
           )
@@ -4196,7 +4206,7 @@ export default function App() {
   };
   const isBgPaused = bgIsPaused;
   const isBgLoading = bgIsLoading;
-  const showInstallBanner = !isStandalone;
+  const showInstallBanner = !isStandalone && !Capacitor.isNativePlatform();
   const isDevBuild = import.meta.env.DEV;
   const installMode = installPromptEvent ? "prompt" : isIOS ? "ios" : "unavailable";
   const handleInstallClick = async () => {

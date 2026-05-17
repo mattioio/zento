@@ -3,7 +3,7 @@ import { Purchases } from "@revenuecat/purchases-capacitor";
 import { useSyncExternalStore } from "react";
 import { storage } from "./storage.js";
 
-const ENTITLEMENT_ID = "full_game";
+const ENTITLEMENT_ID = "Zento Pro";
 const CACHE_KEY = "zen_has_full_game";
 const DEV_KEY = "zen_dev_unlock";
 
