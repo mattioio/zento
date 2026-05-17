@@ -23,19 +23,25 @@ const OUT_DIR = path.join(ROOT, "screenshots", "output");
 
 // Phone geometry, expressed as fractions of the canvas width.
 // These look right for the 6.7" target (1290x2796).
-const PHONE_WIDTH_FRACTION = 0.74;
+const PHONE_WIDTH_FRACTION = 0.84;
 const SCREEN_BEZEL = 0.035;        // fraction of phone width (uniform on all sides)
 // Body aspect is chosen so the SCREEN aperture matches a real 19.5:9 iPhone
 // screen, accounting for the bezel: (h - 2b)/(w - 2b) = 19.5/9.
 const PHONE_ASPECT = (1 - 2 * SCREEN_BEZEL) * (19.5 / 9) + 2 * SCREEN_BEZEL;
 const PHONE_CORNER_RADIUS = 0.21;  // fraction of phone width
-const ISLAND_WIDTH_FRACTION = 0.32;// fraction of phone width
-const ISLAND_HEIGHT_FRACTION = 0.034;
-const ISLAND_TOP_OFFSET = 0.025;   // fraction of phone width below top bezel
+// Where the phone top sits on the canvas (fraction of canvas height).
+// Bottom may go off-canvas — intentional "phone rises into frame" effect.
+const PHONE_TOP_FRACTION = 0.26;
 
 const HEADLINE_TOP_FRACTION = 0.075;   // top edge of headline / canvas height
 const HEADLINE_FONT_FRACTION = 0.034;  // headline size / canvas height (Krona One is a wide face)
 const HEADLINE_LINE_GAP = 1.18;        // line-height multiplier
+
+// When showLogo is true on a shot, render "Zentō" as a brand stamp above
+// the headline and push the headline down to make room.
+const LOGO_TOP_FRACTION = 0.045;
+const LOGO_FONT_FRACTION = 0.046;
+const HEADLINE_TOP_FRACTION_WITH_LOGO = 0.16;
 
 function escapeXml(s) {
   return String(s).replace(/[<>&'"]/g, (c) => ({
@@ -66,6 +72,143 @@ function svgHeadline({ text, color, x, y, fontSize, font }) {
       style="letter-spacing: -0.01em;"
     >${tspans}</text>
   `;
+}
+
+function composeSoundwave(shot, target) {
+  const { width: canvasW, height: canvasH } = target;
+  const accent = shot.accent || shot.headlineColor || "#2f5d3a";
+
+  // Headline geometry (no logo on this shot).
+  const headlineFont = Math.round(canvasH * HEADLINE_FONT_FRACTION);
+  const headlineY = Math.round(canvasH * HEADLINE_TOP_FRACTION) + headlineFont;
+
+  // Track label
+  const labelTopY = Math.round(canvasH * 0.34);
+  const labelFont = Math.round(canvasH * 0.013);
+  const trackFont = Math.round(canvasH * 0.038);
+  const trackY = labelTopY + labelFont + Math.round(canvasH * 0.012) + trackFont;
+
+  // Waveform geometry — bars centred on a horizontal baseline.
+  const waveCenterY = Math.round(canvasH * 0.56);
+  const waveWidth = Math.round(canvasW * 0.74);
+  const waveStartX = (canvasW - waveWidth) / 2;
+  const barCount = 56;
+  const barGap = waveWidth / barCount;
+  const barWidth = Math.max(6, Math.round(barGap * 0.42));
+  const maxBarHeight = Math.round(canvasH * 0.13);
+  const minBarHeight = Math.round(canvasH * 0.012);
+
+  // Deterministic gentle waveform — envelope (sin) modulated by a smooth
+  // pseudo-random ripple. Symmetric around baseline so it reads as "audio".
+  let bars = "";
+  for (let i = 0; i < barCount; i++) {
+    const t = i / (barCount - 1);
+    const envelope = Math.sin(t * Math.PI); // 0 at edges, 1 at middle
+    const ripple =
+      0.55 +
+      0.25 * Math.sin(i * 0.85 + 1.7) +
+      0.20 * Math.sin(i * 1.93 + 0.4);
+    const h = Math.round(
+      minBarHeight + (maxBarHeight - minBarHeight) * envelope * ripple
+    );
+    const x = waveStartX + Math.round(i * barGap + (barGap - barWidth) / 2);
+    bars += `<rect x="${x}" y="${waveCenterY - h / 2}" width="${barWidth}" height="${h}" rx="${barWidth / 2}" fill="${accent}" fill-opacity="0.92"/>`;
+  }
+
+  // Audio controls — prev / play / next, play larger and filled.
+  const controlsY = Math.round(canvasH * 0.74);
+  const playR = Math.round(canvasW * 0.085);
+  const sideR = Math.round(playR * 0.78);
+  const controlGap = Math.round(canvasW * 0.075);
+  const cx = canvasW / 2;
+
+  // SVG path snippets centred at 0,0 — moved into position via <g translate>.
+  const prevIconR = Math.round(sideR * 0.42);
+  const nextIconR = prevIconR;
+  const playIconR = Math.round(playR * 0.42);
+
+  // Prev: two stacked triangles + bar (skip-back). Drawn as path centred.
+  const prevIcon = `
+    <path d="M ${prevIconR * 0.1} ${-prevIconR * 0.6} L ${-prevIconR * 0.6} 0 L ${prevIconR * 0.1} ${prevIconR * 0.6} Z
+              M ${prevIconR * 0.95} ${-prevIconR * 0.6} L ${prevIconR * 0.25} 0 L ${prevIconR * 0.95} ${prevIconR * 0.6} Z"
+          fill="${accent}"/>
+  `;
+  const nextIcon = `
+    <path d="M ${-prevIconR * 0.1} ${-prevIconR * 0.6} L ${prevIconR * 0.6} 0 L ${-prevIconR * 0.1} ${prevIconR * 0.6} Z
+              M ${-prevIconR * 0.95} ${-prevIconR * 0.6} L ${-prevIconR * 0.25} 0 L ${-prevIconR * 0.95} ${prevIconR * 0.6} Z"
+          fill="${accent}"/>
+  `;
+  // Play triangle (right-pointing) optically nudged a few px right.
+  const playIcon = `
+    <path d="M ${-playIconR * 0.55 + playIconR * 0.18} ${-playIconR * 0.85}
+             L ${playIconR * 0.85 + playIconR * 0.18} 0
+             L ${-playIconR * 0.55 + playIconR * 0.18} ${playIconR * 0.85} Z"
+          fill="#ffffff"/>
+  `;
+
+  const buttonFill = "#ffffff";
+  const buttonStroke = accent;
+  const buttonStrokeW = Math.max(2, Math.round(sideR * 0.04));
+
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${shot.gradient[0]}"/>
+      <stop offset="100%" stop-color="${shot.gradient[1]}"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="${Math.round(canvasW * 0.012)}"/>
+      <feOffset dx="0" dy="${Math.round(canvasW * 0.008)}" result="o"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.20"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+
+  ${svgHeadline({
+    text: shot.headline,
+    color: shot.headlineColor,
+    x: canvasW / 2,
+    y: headlineY,
+    fontSize: headlineFont,
+    font: FONT_HEADLINE
+  })}
+
+  <!-- now-playing label + track title -->
+  <text x="${canvasW / 2}" y="${labelTopY + labelFont}"
+        text-anchor="middle"
+        font-family="${escapeXml(FONT_HEADLINE)}"
+        font-size="${labelFont}"
+        fill="${shot.headlineColor}"
+        fill-opacity="0.55"
+        style="letter-spacing: 0.22em;">NOW PLAYING</text>
+  <text x="${canvasW / 2}" y="${trackY}"
+        text-anchor="middle"
+        font-family="${escapeXml(FONT_HEADLINE)}"
+        font-size="${trackFont}"
+        fill="${shot.headlineColor}">${escapeXml(shot.trackName || "Hope")}</text>
+
+  <!-- soundwave -->
+  <g>${bars}</g>
+
+  <!-- controls -->
+  <g transform="translate(${cx - playR - controlGap - sideR} ${controlsY})">
+    <circle r="${sideR}" fill="${buttonFill}" stroke="${buttonStroke}" stroke-width="${buttonStrokeW}" filter="url(#softShadow)"/>
+    ${prevIcon}
+  </g>
+  <g transform="translate(${cx} ${controlsY})">
+    <circle r="${playR}" fill="${accent}" filter="url(#softShadow)"/>
+    ${playIcon}
+  </g>
+  <g transform="translate(${cx + playR + controlGap + sideR} ${controlsY})">
+    <circle r="${sideR}" fill="${buttonFill}" stroke="${buttonStroke}" stroke-width="${buttonStrokeW}" filter="url(#softShadow)"/>
+    ${nextIcon}
+  </g>
+</svg>`;
+
+  return svg;
 }
 
 async function composeElement(shot, target, rawBuffer) {
@@ -166,14 +309,11 @@ async function composePhone(shot, target, rawBuffer) {
   const screenW = phoneW - bezelPx * 2;
   const screenH = phoneH - bezelPx * 2;
   const screenCornerR = Math.max(0, cornerR - bezelPx);
-  const islandW = Math.round(phoneW * ISLAND_WIDTH_FRACTION);
-  const islandH = Math.round(phoneW * ISLAND_HEIGHT_FRACTION);
-  const islandTop = bezelPx + Math.round(phoneW * ISLAND_TOP_OFFSET);
 
-  // Anchor phone near bottom, so headline sits above it comfortably.
-  // Centre of phone, in canvas coords:
+  // Anchor phone so its TOP sits at PHONE_TOP_FRACTION of the canvas; the
+  // bottom is allowed to extend past the canvas edge (Matt likes that).
   const phoneCx = canvasW / 2;
-  const phoneCy = canvasH - phoneH / 2 - Math.round(canvasH * 0.04);
+  const phoneCy = Math.round(canvasH * PHONE_TOP_FRACTION) + phoneH / 2;
 
   // Resize the captured screen content to fit the screen aperture, then
   // crop / cover so we never see borders.
@@ -183,9 +323,20 @@ async function composePhone(shot, target, rawBuffer) {
     .toBuffer();
   const screenContentB64 = screenContent.toString("base64");
 
-  // Headline geometry.
+  // Headline + optional logo geometry.
   const headlineFont = Math.round(canvasH * HEADLINE_FONT_FRACTION);
-  const headlineY = Math.round(canvasH * HEADLINE_TOP_FRACTION) + headlineFont;
+  const headlineTopFraction = shot.showLogo
+    ? HEADLINE_TOP_FRACTION_WITH_LOGO
+    : HEADLINE_TOP_FRACTION;
+  const headlineY = Math.round(canvasH * headlineTopFraction) + headlineFont;
+  const logoFont = Math.round(canvasH * LOGO_FONT_FRACTION);
+  const logoY = Math.round(canvasH * LOGO_TOP_FRACTION) + logoFont;
+  // Krona One only ships in one weight, so we fake "bolder" via a stroke
+  // the same colour as the fill — adds ~1-2px of weight to each stem.
+  const logoStrokeWidth = Math.max(2, Math.round(logoFont * 0.04));
+  const logoSvg = shot.showLogo
+    ? `<text x="${canvasW / 2}" y="${logoY}" text-anchor="middle" font-family="${escapeXml(FONT_HEADLINE)}" font-size="${logoFont}" fill="${shot.headlineColor}" stroke="${shot.headlineColor}" stroke-width="${logoStrokeWidth}" paint-order="stroke fill" style="letter-spacing: 0.08em;">ZENTō</text>`
+    : "";
 
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}">
@@ -207,6 +358,8 @@ async function composePhone(shot, target, rawBuffer) {
 
   <rect width="100%" height="100%" fill="url(#bg)"/>
 
+  ${logoSvg}
+
   ${svgHeadline({
     text: shot.headline,
     color: shot.headlineColor,
@@ -225,7 +378,9 @@ async function composePhone(shot, target, rawBuffer) {
       fill="#15161a"
       filter="url(#phoneShadow)"
     />
-    <!-- screen content, clipped to rounded rect -->
+    <!-- screen content (already includes the real iOS status bar +
+         dynamic island from the simulator capture), clipped to a
+         rounded rect. -->
     <g clip-path="url(#screen)">
       <image
         x="${-screenW / 2}" y="${-screenH / 2}"
@@ -234,13 +389,6 @@ async function composePhone(shot, target, rawBuffer) {
         preserveAspectRatio="xMidYMid slice"
       />
     </g>
-    <!-- dynamic island -->
-    <rect
-      x="${-islandW / 2}" y="${-phoneH / 2 + islandTop}"
-      width="${islandW}" height="${islandH}"
-      rx="${islandH / 2}" ry="${islandH / 2}"
-      fill="#000"
-    />
   </g>
 </svg>`;
 
@@ -248,18 +396,23 @@ async function composePhone(shot, target, rawBuffer) {
 }
 
 async function composeOne(shot, target) {
-  const rawPath = path.join(RAW_DIR, shot.raw);
-  let rawBuffer;
-  try {
-    rawBuffer = await fs.readFile(rawPath);
-  } catch {
-    console.warn(`⚠️  ${shot.raw} not found in screenshots/raw/, skipping ${shot.id}`);
-    return;
+  let svg;
+  if (shot.layout === "soundwave") {
+    svg = composeSoundwave(shot, target);
+  } else {
+    const rawPath = path.join(RAW_DIR, shot.raw);
+    let rawBuffer;
+    try {
+      rawBuffer = await fs.readFile(rawPath);
+    } catch {
+      console.warn(`⚠️  ${shot.raw} not found in screenshots/raw/, skipping ${shot.id}`);
+      return;
+    }
+    svg =
+      shot.layout === "element"
+        ? await composeElement(shot, target, rawBuffer)
+        : await composePhone(shot, target, rawBuffer);
   }
-  const svg =
-    shot.layout === "element"
-      ? await composeElement(shot, target, rawBuffer)
-      : await composePhone(shot, target, rawBuffer);
   const outDir = path.join(OUT_DIR, target.id);
   await fs.mkdir(outDir, { recursive: true });
   const outPath = path.join(outDir, `${shot.id}.png`);
