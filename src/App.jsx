@@ -2939,6 +2939,12 @@ export default function App() {
   }, [difficultyIndex]);
 
   useEffect(() => {
+    if (!hasFullGame && difficultyLevels[difficultyIndex] === "hard") {
+      setDifficultyIndex(1);
+    }
+  }, [hasFullGame, difficultyIndex]);
+
+  useEffect(() => {
     const indices = Array.from({ length: 10 }, (_, i) => i);
     for (let i = indices.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -3815,6 +3821,17 @@ export default function App() {
     () => new Set(progressCompletedLevels),
     [progressCompletedLevels]
   );
+  const effectiveUnlockedThemes = useMemo(() => {
+    if (!hasFullGame) return progressCompletedSet;
+    const next = new Set(progressCompletedSet);
+    for (const theme of themes) {
+      if (theme.unlockable) {
+        const lvl = Number(theme.unlockLevel);
+        if (Number.isFinite(lvl)) next.add(lvl);
+      }
+    }
+    return next;
+  }, [hasFullGame, progressCompletedSet, themes]);
   const assignedCount = assignedLevels.length;
   const totalCells = ROWS * COLS;
   const maxBlankCells = Math.max(0, totalCells - MIN_TILES);
@@ -4282,12 +4299,13 @@ export default function App() {
         <div className="modal-backdrop" onClick={closePaywall} role="dialog" aria-modal="true">
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <p className="modal-title">Unlock Zento</p>
-            <p className="modal-subtitle">Continue your journey.</p>
+            <p className="modal-subtitle">Continue the journey.</p>
             <div className="modal-section">
               <div className="modal-list">
                 <p className="modal-item">All 96 hand-tuned levels</p>
-                <p className="modal-item">Every unlockable theme</p>
-                <p className="modal-item">Harder endless complexity</p>
+                <p className="modal-item">Every theme</p>
+                <p className="modal-item">Hard endless mode</p>
+                <p className="modal-item">One-time purchase. No subscription.</p>
               </div>
             </div>
             {paywallError ? (
@@ -4399,7 +4417,7 @@ export default function App() {
               themeMode={themeMode}
               themeIndex={themeIndex}
               themes={themes}
-              unlockedThemeLevels={progressCompletedSet}
+              unlockedThemeLevels={effectiveUnlockedThemes}
               showThemePicker={showThemePicker}
               themePickerMounted={themePickerMounted}
               onTogglePicker={toggleThemePicker}
@@ -5264,6 +5282,10 @@ export default function App() {
                       className="button button-ghost"
                       onClick={() => {
                         const nextIndex = (difficultyIndex + 1) % difficultyLevels.length;
+                        if (difficultyLevels[nextIndex] === "hard" && !hasFullGame) {
+                          openPaywall();
+                          return;
+                        }
                         emitEvent("difficulty_changed", {
                           mode: "endless",
                           from: difficultyLevels[difficultyIndex],
@@ -5581,7 +5603,7 @@ export default function App() {
             themeMode={themeMode}
             themeIndex={themeIndex}
             themes={themes}
-            unlockedThemeLevels={progressCompletedSet}
+            unlockedThemeLevels={effectiveUnlockedThemes}
             showThemePicker={showThemePicker}
             themePickerMounted={themePickerMounted}
             onTogglePicker={toggleThemePicker}
