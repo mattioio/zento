@@ -13,6 +13,7 @@ import {
 } from "./analytics.js";
 import {
   useHasFullGame,
+  usePriceString,
   purchaseFullGame,
   restorePurchases
 } from "./entitlements.js";
@@ -2397,6 +2398,7 @@ export default function App() {
     return Math.min(TOTAL_LEVELS, Math.floor(parsed));
   });
   const hasFullGame = useHasFullGame();
+  const priceString = usePriceString();
   const effectiveUnlockedLevel = hasFullGame
     ? progressUnlockedLevel
     : Math.min(progressUnlockedLevel, FREE_MAX_LEVEL);
@@ -4300,7 +4302,11 @@ export default function App() {
                 onClick={handleUnlock}
                 disabled={paywallBusy}
               >
-                {paywallBusy ? "Unlocking…" : "Unlock for £0.99"}
+                {paywallBusy
+                  ? "Unlocking…"
+                  : priceString
+                    ? `Unlock for ${priceString}`
+                    : "Unlock"}
               </button>
               <button
                 type="button"
@@ -5534,7 +5540,9 @@ export default function App() {
                         className="button paywall-inline-cta"
                         onClick={openPaywall}
                       >
-                        Unlock all 96 levels for £0.99
+                        {priceString
+                          ? `Unlock all 96 levels for ${priceString}`
+                          : "Unlock all 96 levels"}
                       </button>
                     ) : null}
                   </>
