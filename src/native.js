@@ -38,6 +38,18 @@ function loadHaptics() {
   return hapticsPromise;
 }
 
+let browserPromise = null;
+function loadBrowser() {
+  if (!isNative) return Promise.resolve(null);
+  if (!browserPromise) {
+    browserPromise = import("@capacitor/browser").catch((err) => {
+      console.error("Browser import failed", err);
+      return null;
+    });
+  }
+  return browserPromise;
+}
+
 export async function applyStatusBarForBackground(hexColor) {
   if (!isNative) return;
   const mod = await loadStatusBar();
@@ -83,6 +95,24 @@ export async function impactMedium() {
     await mod.Haptics.impact({ style: mod.ImpactStyle.Medium });
   } catch (err) {
     // Swallow
+  }
+}
+
+export async function openExternal(url) {
+  if (!url) return;
+  if (!isNative) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const mod = await loadBrowser();
+  if (!mod) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  try {
+    await mod.Browser.open({ url });
+  } catch (err) {
+    console.error("Browser.open failed", err);
   }
 }
 

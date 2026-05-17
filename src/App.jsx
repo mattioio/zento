@@ -18,7 +18,7 @@ import {
   purchaseFullGame,
   restorePurchases
 } from "./entitlements.js";
-import { applyStatusBarForBackground, impactLight, impactMedium } from "./native.js";
+import { applyStatusBarForBackground, impactLight, impactMedium, openExternal } from "./native.js";
 
 const ROWS = 10;
 const COLS = 6;
@@ -1923,7 +1923,16 @@ function CreditsFooter({ audioAttribution }) {
       {audioAttribution.map((item) => (
         <span key={item.source}>
           {item.source} — {item.license} (
-          <a className="modal-link" href={item.url} target="_blank" rel="noreferrer">
+          <a
+            className="modal-link"
+            href={item.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              openExternal(item.url);
+            }}
+          >
             source
           </a>
           )
