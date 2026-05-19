@@ -2,6 +2,26 @@ import { Capacitor } from "@capacitor/core";
 
 const isNative = Capacitor.isNativePlatform();
 
+let appPluginPromise = null;
+function loadApp() {
+  if (!isNative) return Promise.resolve(null);
+  if (!appPluginPromise) {
+    appPluginPromise = import("@capacitor/app").catch((err) => {
+      console.error("App plugin import failed", err);
+      return null;
+    });
+  }
+  return appPluginPromise;
+}
+
+export async function onAppStateChange(callback) {
+  if (!isNative) return () => {};
+  const mod = await loadApp();
+  if (!mod) return () => {};
+  const handle = await mod.App.addListener("appStateChange", callback);
+  return () => handle.remove();
+}
+
 let statusBarPromise = null;
 function loadStatusBar() {
   if (!isNative) return Promise.resolve(null);
@@ -55,8 +75,8 @@ export async function applyStatusBarForBackground(hexColor) {
   const mod = await loadStatusBar();
   if (!mod) return;
   try {
-    const isDark = isHexDark(hexColor);
-    await mod.StatusBar.setStyle({ style: isDark ? mod.Style.Light : mod.Style.Dark });
+    const isDark = isColorDark(hexColor);
+    await mod.StatusBar.setStyle({ style: isDark ? mod.Style.Dark : mod.Style.Light });
     if (mod.StatusBar.setBackgroundColor) {
       await mod.StatusBar.setBackgroundColor({ color: hexColor }).catch(() => {});
     }
@@ -116,16 +136,22 @@ export async function openExternal(url) {
   }
 }
 
-function isHexDark(hex) {
-  if (typeof hex !== "string") return false;
-  const clean = hex.replace(/^#/, "");
-  if (clean.length !== 6 && clean.length !== 3) return false;
+function parseColorToRgb(color) {
+  if (typeof color !== "string") return null;
+  const trimmed = color.trim();
+  const rgbMatch = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgbMatch) return [+rgbMatch[1], +rgbMatch[2], +rgbMatch[3]];
+  const clean = trimmed.replace(/^#/, "");
+  if (clean.length !== 6 && clean.length !== 3) return null;
   const full = clean.length === 3
     ? clean.split("").map((c) => c + c).join("")
     : clean;
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+}
+
+function isColorDark(color) {
+  const rgb = parseColorToRgb(color);
+  if (!rgb) return false;
+  const luminance = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255;
   return luminance < 0.5;
 }

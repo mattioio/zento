@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 160" fill="currentColor" aria-label="Zento" role="img">
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Krona+One&amp;display=swap");
+    .zento-logo {
+      font-family: "Krona One", "Helvetica Neue", Arial, sans-serif;
+      letter-spacing: 0.08em;
+      font-weight: 400;
+    }
+  </style>
+  <text class="zento-logo" x="400" y="115" text-anchor="middle" font-size="110">
+    <tspan>ZENT</tspan><tspan font-size="100" dy="-2">ō</tspan>
+  </text>
+</svg>
