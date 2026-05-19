@@ -1,5 +1,13 @@
 {
   "appId": "io.mattio.zento",
   "appName": "Zento",
-  "webDir": "dist"
+  "webDir": "dist",
+  "ios": {
+    "allowsLinkPreview": false
+  },
+  "plugins": {
+    "StatusBar": {
+      "overlaysWebView": true
+    }
+  }
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
@@ -16,14 +16,29 @@ import {
   useHasFullGame,
   usePriceString,
   purchaseFullGame,
-  restorePurchases
+  refreshEntitlements,
+  restorePurchases,
+  setDevUnlock
 } from "./entitlements.js";
-import { applyStatusBarForBackground, impactLight, impactMedium, openExternal } from "./native.js";
+import { applyStatusBarForBackground, impactLight, impactMedium, onAppStateChange, openExternal } from "./native.js";
 
 const ROWS = 10;
 const COLS = 6;
-const TOTAL_LEVELS = 96;
-const FREE_MAX_LEVEL = 13;
+const DEFAULT_TOTAL_LEVELS = 200;
+const MIN_TOTAL_LEVELS = 1;
+const MAX_TOTAL_LEVELS = 999;
+
+const DIFFICULTY_TIERS = [
+  { id: "dawn", label: "Still", description: "A calm surface, plenty of openings", locked: false },
+  { id: "morning", label: "Drift", description: "A gentle current of paths", locked: false },
+  { id: "noon", label: "Ripple", description: "Light patterns emerge", locked: false },
+  { id: "dusk", label: "Wave", description: "A flowing, balanced challenge", locked: true },
+  { id: "twilight", label: "Swell", description: "Stronger currents, denser paths", locked: true },
+  { id: "midnight", label: "Tide", description: "A surging, fully packed board", locked: true }
+];
+const DIFFICULTY_IDS = DIFFICULTY_TIERS.map((tier) => tier.id);
+const LEGACY_DIFFICULTY_MIGRATION = { easy: "dusk", medium: "twilight", hard: "midnight" };
+const FREE_MAX_LEVEL = 20;
 const MIN_TILES = 4;
 
 const TILE_TYPES = [
@@ -45,6 +60,7 @@ const PROGRESSION_SETTINGS_RANGES = {
   emptyRowMax: { min: 0, max: 5 },
   emptyColMax: { min: 0, max: 5 },
   centerBias: { min: 0, max: 100 },
+  crossRate: { min: 0, max: 12 },
   variant: { min: 0, max: 9 }
 };
 
@@ -58,6 +74,7 @@ const DEFAULT_PROGRESSION_SETTINGS = {
   emptyRowMax: 2,
   emptyColMax: 2,
   centerBias: 0,
+  crossRate: 1,
   variant: 0
 };
 
@@ -87,13 +104,14 @@ function normalizeProgressionSettings(settings) {
   return next;
 }
 
-function normalizeLevelList(list) {
+function normalizeLevelList(list, count = DEFAULT_TOTAL_LEVELS) {
   const source = Array.isArray(list)
     ? list
     : list && typeof list === "object" && Array.isArray(list.levels)
       ? list.levels
       : [];
-  return Array.from({ length: TOTAL_LEVELS }, (_, index) => {
+  const length = Math.max(count, source.length);
+  return Array.from({ length }, (_, index) => {
     const value = source[index];
     return typeof value === "string" ? value : "";
   });
@@ -101,11 +119,29 @@ function normalizeLevelList(list) {
 
 function buildProgressionSeed(settings) {
   const normalized = normalizeProgressionSettings(settings);
-  return `P${normalized.gapRate}-${normalized.gapClusters}-${normalized.curveBias}-${normalized.terminalRate}-${normalized.straightRunMax}-${normalized.terminalSpacing}-${normalized.emptyRowMax}-${normalized.emptyColMax}-${normalized.centerBias}-${normalized.variant}`;
+  return `P${normalized.gapRate}-${normalized.gapClusters}-${normalized.curveBias}-${normalized.terminalRate}-${normalized.straightRunMax}-${normalized.terminalSpacing}-${normalized.emptyRowMax}-${normalized.emptyColMax}-${normalized.centerBias}-${normalized.crossRate}-${normalized.variant}`;
 }
 
 function parseProgressionSeed(seedText) {
   if (!seedText || typeof seedText !== "string") return null;
+  const matchV3 = seedText.match(
+    /^P(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)$/i
+  );
+  if (matchV3) {
+    return normalizeProgressionSettings({
+      gapRate: Number(matchV3[1]),
+      gapClusters: Number(matchV3[2]),
+      curveBias: Number(matchV3[3]),
+      terminalRate: Number(matchV3[4]),
+      straightRunMax: Number(matchV3[5]),
+      terminalSpacing: Number(matchV3[6]),
+      emptyRowMax: Number(matchV3[7]),
+      emptyColMax: Number(matchV3[8]),
+      centerBias: Number(matchV3[9]),
+      crossRate: Number(matchV3[10]),
+      variant: Number(matchV3[11])
+    });
+  }
   const match = seedText.match(
     /^P(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)-(\d+)$/i
   );
@@ -151,6 +187,39 @@ function parseProgressionSeed(seedText) {
   });
 }
 
+function metaToProgressionDeltas(meta) {
+  const difficulty = clampValue(Math.round(Number(meta.difficulty) || 0), 0, 100);
+  const pathStyle = clampValue(Math.round(Number(meta.pathStyle) || 0), 0, 100);
+  const gapLayout = clampValue(Math.round(Number(meta.gapLayout) || 0), 0, 100);
+  const terminals = clampValue(Math.round(Number(meta.terminals) || 0), 0, 100);
+  const crosses = clampValue(Math.round(Number(meta.crosses) || 0), 0, 100);
+  const gapRate = clampValue(Math.round((100 - difficulty) * 0.94), 0, 96);
+  const emptyRun = clampValue(Math.round(gapRate / 19), 0, 5);
+  return {
+    gapRate,
+    emptyRowMax: emptyRun,
+    emptyColMax: emptyRun,
+    curveBias: clampValue(Math.round(20 + pathStyle * 0.2), 20, 40),
+    straightRunMax: clampValue(Math.round(6 - pathStyle * 0.04), 2, 6),
+    gapClusters: clampValue(Math.round(1 + gapLayout * 0.03), 0, 4),
+    centerBias: clampValue(Math.round(gapLayout), 0, 100),
+    terminalRate: clampValue(Math.round(12 + terminals * 0.12), 12, 24),
+    terminalSpacing: clampValue(Math.round(5 - terminals * 0.04), 1, 5),
+    crossRate: clampValue(Math.round(crosses * 0.12), 0, 12)
+  };
+}
+
+function progressionToMeta(settings) {
+  const n = normalizeProgressionSettings(settings);
+  return {
+    difficulty: clampValue(Math.round(100 - n.gapRate / 0.94), 0, 100),
+    pathStyle: clampValue(Math.round((n.curveBias - 20) / 0.2), 0, 100),
+    gapLayout: clampValue(Math.round(n.centerBias), 0, 100),
+    terminals: clampValue(Math.round((n.terminalRate - 12) / 0.12), 0, 100),
+    crosses: clampValue(Math.round(n.crossRate / 0.12), 0, 100)
+  };
+}
+
 function progressionSettingsToBoardConfig(settings) {
   const normalized = normalizeProgressionSettings(settings);
   const totalCells = ROWS * COLS;
@@ -180,7 +249,8 @@ function progressionSettingsToBoardConfig(settings) {
     maxTerminals,
     maxStraightRunAllowed: normalized.straightRunMax,
     minTerminalDistance: normalized.terminalSpacing,
-    maxTerminalClusterAllowed: 3
+    maxTerminalClusterAllowed: 3,
+    maxCrosses: normalized.crossRate
   };
 }
 
@@ -511,17 +581,23 @@ function makeBoard(seedText, difficulty = "medium") {
     ? progressionSettingsToBoardConfig(progressionSettings)
     : null;
   const difficultyConfig = {
-    easy: { min: 13, max: 20, clusters: 3, minClusterCells: 6, maxEmptyRowRun: 2, maxEmptyColRun: 2 },
-    medium: { min: 4, max: 12, clusters: 2, minClusterCells: 6, maxEmptyRowRun: 2, maxEmptyColRun: 2 },
-    hard: { min: 0, max: 0, clusters: 0, minClusterCells: 0, maxEmptyRowRun: 0, maxEmptyColRun: 0 }
+    dawn: { min: 44, max: 52, clusters: 6, minClusterCells: 4, maxEmptyRowRun: 6, maxEmptyColRun: 6 },
+    morning: { min: 32, max: 40, clusters: 5, minClusterCells: 5, maxEmptyRowRun: 5, maxEmptyColRun: 5 },
+    noon: { min: 22, max: 30, clusters: 4, minClusterCells: 5, maxEmptyRowRun: 4, maxEmptyColRun: 4 },
+    dusk: { min: 12, max: 20, clusters: 3, minClusterCells: 6, maxEmptyRowRun: 3, maxEmptyColRun: 3 },
+    twilight: { min: 2, max: 10, clusters: 2, minClusterCells: 6, maxEmptyRowRun: 2, maxEmptyColRun: 2 },
+    midnight: { min: 0, max: 0, clusters: 0, minClusterCells: 0, maxEmptyRowRun: 0, maxEmptyColRun: 0 }
   };
-  const baseConfig = progressionConfig?.blanks || difficultyConfig[difficulty] || difficultyConfig.medium;
+  const baseConfig = progressionConfig?.blanks || difficultyConfig[difficulty] || difficultyConfig.twilight;
   const blankMin = Math.max(0, Math.floor(baseConfig.min));
   const blankMax = Math.max(blankMin, Math.floor(baseConfig.max));
   const curveRatioByDifficulty = {
-    easy: 0.32,
-    medium: 0.28,
-    hard: 0.24
+    dawn: 0.40,
+    morning: 0.36,
+    noon: 0.34,
+    dusk: 0.32,
+    twilight: 0.28,
+    midnight: 0.24
   };
   const curveRatio = progressionConfig?.curveRatio ?? curveRatioByDifficulty[difficulty] ?? 0.28;
   const minTerminalsDefault = Math.max(6, Math.floor((ROWS * COLS) * 0.12));
@@ -534,7 +610,9 @@ function makeBoard(seedText, difficulty = "medium") {
   let attemptSeed = 0;
   while (attemptSeed < 60) {
     rand = mulberry32(seed + attemptSeed * 97);
-    edgesByCell = generateSolvedEdges(ROWS, COLS, rand);
+    edgesByCell = generateSolvedEdges(ROWS, COLS, rand, {
+      maxCrosses: progressionConfig?.maxCrosses ?? 1
+    });
     if (blankMax > 0) {
       const targetCount = blankMin + Math.floor(rand() * (blankMax - blankMin + 1));
       applySymmetricBlanks(
@@ -705,7 +783,7 @@ function addEdge(edgesByCell, r1, c1, r2, c2, dir) {
   edgesByCell.set(keyB, edgesB);
 }
 
-function generateSolvedEdges(rows, cols, rand) {
+function generateSolvedEdges(rows, cols, rand, options = {}) {
   const edgesByCell = new Map();
   const visited = new Set();
   const stack = [];
@@ -763,7 +841,7 @@ function generateSolvedEdges(rows, cols, rand) {
     }
   }
 
-  const maxCrosses = 1;
+  const maxCrosses = options.maxCrosses ?? 1;
   const maxTJunctions = Math.max(2, Math.floor((rows * cols) / 6));
   const extraEdgesTarget = Math.max(1, Math.floor((rows * cols) / 7));
   let added = 0;
@@ -1510,6 +1588,9 @@ function ThemePanel({
   themeIndex,
   themes,
   unlockedThemeLevels,
+  hasFullGame,
+  priceString,
+  onOpenPaywall,
   showThemePicker,
   themePickerMounted,
   onTogglePicker,
@@ -1605,6 +1686,17 @@ function ThemePanel({
               </button>
             );
           })}
+          {!hasFullGame && (nightThemes.length || unlockableThemes.length) ? (
+            <div className="difficulty-unlock-row">
+              <button type="button" className="difficulty-unlock-cta" onClick={onOpenPaywall}>
+                <svg className="difficulty-unlock-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
+                </svg>
+                <span>{priceString ? `Unlock all themes for ${priceString}` : "Unlock all themes"}</span>
+              </button>
+            </div>
+          ) : null}
           {nightThemes.length ? (
             <div className="theme-group-header theme-group-header--night">
               <div className="theme-group-title">Night modes</div>
@@ -1615,15 +1707,22 @@ function ThemePanel({
               {nightThemes.map(({ theme, index }) => {
                 const isActive = themeMode === "fixed" && index === themeIndex;
                 const sleepLevel = Number(theme.sleepLevel) || 1;
+                const isLocked = !hasFullGame;
                 return (
                   <button
                     key={theme.name}
                     type="button"
                     className={`theme-button theme-night-card is-night${
                       isActive ? " is-active" : ""
-                    }`}
-                    onClick={() => onSelectTheme(index)}
-                    aria-label={theme.name}
+                    }${isLocked ? " is-locked" : ""}`}
+                    onClick={() => {
+                      if (isLocked) {
+                        onOpenPaywall?.();
+                        return;
+                      }
+                      onSelectTheme(index);
+                    }}
+                    aria-label={isLocked ? `${theme.name} (locked)` : theme.name}
                   >
                     <span className="theme-label theme-label-hidden" aria-hidden="true">
                       Night mode
@@ -1637,6 +1736,14 @@ function ThemePanel({
                         </span>
                       </span>
                     </span>
+                    {isLocked ? (
+                      <span className="theme-lock-corner" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="14" height="14">
+                          <path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                          <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
+                        </svg>
+                      </span>
+                    ) : null}
                   </button>
                 );
               })}
@@ -1763,6 +1870,259 @@ function PlayerCard({
   );
 }
 
+function DifficultyIcon({ id }) {
+  const common = {
+    className: "difficulty-option-icon",
+    viewBox: "0 0 24 24",
+    width: 26,
+    height: 26,
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.7,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true
+  };
+  const wave = (y, delay = 0) => (
+    <path
+      key={y}
+      className="ripple-wave"
+      style={{ animationDelay: `${delay}s` }}
+      d={`M -12 ${y} q 2 -1.6 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0 t 4 0`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  );
+  if (id === "dawn") {
+    return (
+      <svg {...common}>
+        <line x1="4" y1="12" x2="20" y2="12" />
+      </svg>
+    );
+  }
+  if (id === "morning") {
+    return <svg {...common}>{wave(12)}</svg>;
+  }
+  if (id === "noon") {
+    return <svg {...common}>{wave(9, 0)}{wave(15, -1)}</svg>;
+  }
+  if (id === "dusk") {
+    return <svg {...common}>{wave(7, 0)}{wave(12, -0.7)}{wave(17, -1.4)}</svg>;
+  }
+  if (id === "twilight") {
+    return <svg {...common}>{wave(5.5, 0)}{wave(10, -0.5)}{wave(14, -1)}{wave(18.5, -1.5)}</svg>;
+  }
+  if (id === "midnight") {
+    return <svg {...common}>{wave(4.5, 0)}{wave(8.5, -0.4)}{wave(12, -0.8)}{wave(15.5, -1.2)}{wave(19.5, -1.6)}</svg>;
+  }
+  return null;
+}
+
+function useBottomSheetDrag(onDismiss) {
+  const sheetRef = useRef(null);
+  const dragRef = useRef(null);
+
+  const onPointerDown = useCallback((e) => {
+    if (!e.isPrimary || e.button === 2) return;
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    dragRef.current = { y: e.clientY, t: Date.now(), height: sheet.getBoundingClientRect().height };
+    sheet.style.transition = "none";
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }, []);
+
+  const onPointerMove = useCallback((e) => {
+    const drag = dragRef.current;
+    const sheet = sheetRef.current;
+    if (!drag || !sheet) return;
+    const dy = Math.max(0, e.clientY - drag.y);
+    sheet.style.transform = `translateY(${dy}px)`;
+  }, []);
+
+  const finishDrag = useCallback((e) => {
+    const drag = dragRef.current;
+    const sheet = sheetRef.current;
+    if (!drag || !sheet) return;
+    const dy = Math.max(0, e.clientY - drag.y);
+    const elapsed = Math.max(1, Date.now() - drag.t);
+    const velocity = dy / elapsed;
+    sheet.style.transition = "transform 220ms ease-out";
+    const shouldDismiss = dy > drag.height * 0.25 || velocity > 0.5;
+    if (shouldDismiss) {
+      sheet.style.transform = `translateY(${drag.height}px)`;
+      window.setTimeout(onDismiss, 180);
+    } else {
+      sheet.style.transform = "";
+    }
+    dragRef.current = null;
+  }, [onDismiss]);
+
+  return {
+    sheetRef,
+    handleProps: {
+      onPointerDown,
+      onPointerMove,
+      onPointerUp: finishDrag,
+      onPointerCancel: finishDrag,
+    },
+  };
+}
+
+function DifficultySheet({
+  tiers,
+  hasFullGame,
+  priceString,
+  onSelect,
+  onUnlock,
+  onClose
+}) {
+  const { sheetRef, handleProps } = useBottomSheetDrag(onClose);
+  const freeTiers = tiers.filter((tier) => !tier.locked);
+  const lockedTiers = tiers.filter((tier) => tier.locked);
+  const renderOption = (tier) => {
+    const isLocked = tier.locked && !hasFullGame;
+    return (
+      <li key={tier.id}>
+        <button
+          type="button"
+          className={`difficulty-option${isLocked ? " is-locked" : ""}`}
+          onClick={() => onSelect(tier)}
+        >
+          <DifficultyIcon id={tier.id} />
+          <span className="difficulty-option-text">
+            <span className="difficulty-option-label">{tier.label}</span>
+            <span className="difficulty-option-desc">{tier.description}</span>
+          </span>
+        </button>
+      </li>
+    );
+  };
+  return (
+    <div className="modal-backdrop bottom-sheet-backdrop" onClick={onClose} role="dialog" aria-modal="true">
+      <div ref={sheetRef} className="modal bottom-sheet difficulty-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="bottom-sheet-handle bottom-sheet-grab" {...handleProps} aria-hidden="true" />
+        <p className="modal-title">Choose difficulty</p>
+        <ul className="difficulty-list">
+          {freeTiers.map(renderOption)}
+          {lockedTiers.length > 0 && !hasFullGame ? (
+            <li className="difficulty-unlock-row">
+              <button type="button" className="difficulty-unlock-cta" onClick={onUnlock}>
+                <svg className="difficulty-unlock-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
+                </svg>
+                <span>{priceString ? `Unlock for ${priceString}` : "Unlock more challenge"}</span>
+              </button>
+            </li>
+          ) : null}
+          {lockedTiers.map(renderOption)}
+        </ul>
+        <div className="modal-actions">
+          <button type="button" className="button button-ghost" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThemeSwitcherFab({ themes, themeIndex, onSelectTheme, hasFullGame, onToggleUnlock }) {
+  const [open, setOpen] = useState(false);
+  const { sheetRef, handleProps } = useBottomSheetDrag(() => setOpen(false));
+  const themeGroups = useMemo(() => {
+    const colors = [];
+    const nightModes = [];
+    const unlockable = [];
+    themes.forEach((theme, index) => {
+      const entry = { theme, index };
+      if (theme.unlockable) unlockable.push(entry);
+      else if (theme.nightMode) nightModes.push(entry);
+      else colors.push(entry);
+    });
+    return [
+      { label: "Colors", entries: colors },
+      { label: "Night mode", entries: nightModes },
+      { label: "Unlockable", entries: unlockable }
+    ];
+  }, [themes]);
+  const renderChip = ({ theme, index }) => {
+    const isActive = index === themeIndex;
+    const swatch = theme.colors?.[2] || theme.colors?.[1] || "#888";
+    return (
+      <button
+        key={theme.name}
+        type="button"
+        role="tab"
+        aria-selected={isActive}
+        className={`theme-switcher-chip${isActive ? " is-active" : ""}`}
+        onClick={() => {
+          onSelectTheme(index);
+          setOpen(false);
+        }}
+      >
+        <span className="theme-switcher-chip-swatch" style={{ background: swatch }} aria-hidden="true" />
+        <span className="theme-switcher-chip-name">{theme.name}</span>
+      </button>
+    );
+  };
+  return (
+    <>
+      <button
+        type="button"
+        className="theme-fab"
+        onClick={() => setOpen(true)}
+        aria-label="Switch theme"
+        title="Switch theme"
+      >
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 0 18c1.66 0 2-1.34 2-2 0-.55-.45-1-1-1h-.5a1.5 1.5 0 0 1 0-3H16a5 5 0 0 0 5-5c0-4-4-7-9-7z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+          <circle cx="7" cy="11" r="1.2" fill="currentColor" />
+          <circle cx="9.5" cy="7.5" r="1.2" fill="currentColor" />
+          <circle cx="14" cy="7" r="1.2" fill="currentColor" />
+          <circle cx="17.5" cy="10" r="1.2" fill="currentColor" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="modal-backdrop bottom-sheet-backdrop" onClick={() => setOpen(false)} role="dialog" aria-modal="true">
+          <div ref={sheetRef} className="modal bottom-sheet theme-switcher-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="bottom-sheet-handle bottom-sheet-grab" {...handleProps} aria-hidden="true" />
+            <p className="modal-title">Switch theme</p>
+            <div className="theme-switcher-groups" role="tablist" aria-label="Themes">
+              {themeGroups.map((group) =>
+                group.entries.length > 0 ? (
+                  <div key={group.label} className="theme-switcher-group">
+                    <p className="theme-switcher-group-label">{group.label}</p>
+                    <div className="theme-switcher-grid">
+                      {group.entries.map(renderChip)}
+                    </div>
+                  </div>
+                ) : null
+              )}
+              <div className="theme-switcher-group">
+                <p className="theme-switcher-group-label">Dev</p>
+                <button
+                  type="button"
+                  className={`button button-ghost theme-switcher-unlock${hasFullGame ? " is-active" : ""}`}
+                  onClick={onToggleUnlock}
+                  aria-pressed={hasFullGame}
+                >
+                  {hasFullGame ? "Lock game" : "Unlock all"}
+                </button>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="button button-ghost" onClick={() => setOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function PerformanceCard({ performanceMode, onToggle }) {
   return (
     <div className="performance-card theme-panel-card">
@@ -1828,7 +2188,7 @@ function PrivacyCard({ onOpen }) {
   );
 }
 
-function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy }) {
+function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy, totalLevels }) {
   return (
     <div className="purchases-card theme-panel-card">
       <div className="perf-row">
@@ -1837,7 +2197,7 @@ function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy }) {
           <p className="perf-note">
             {hasFullGame
               ? "You have the full game unlocked. Thank you."
-              : "Unlock all 96 levels and themes."}
+              : `Unlock all ${totalLevels} levels and themes.`}
           </p>
         </div>
         <div className="purchases-actions">
@@ -2036,9 +2396,11 @@ function ControlStack({
   onDenyAnalytics,
   onOpenPrivacyPolicy,
   hasFullGame,
+  priceString,
   onUnlock,
   onRestore,
-  purchasesBusy
+  purchasesBusy,
+  onOpenSettings
 }) {
   return (
     <section className="floating-controls">
@@ -2051,6 +2413,9 @@ function ControlStack({
         themeIndex={themeIndex}
         themes={themes}
         unlockedThemeLevels={unlockedThemeLevels}
+        hasFullGame={hasFullGame}
+        priceString={priceString}
+        onOpenPaywall={onUnlock}
         showThemePicker={showThemePicker}
         themePickerMounted={themePickerMounted}
         onTogglePicker={onTogglePicker}
@@ -2070,40 +2435,29 @@ function ControlStack({
         isLoading={isLoading}
         audioAttribution={audioAttribution}
       />
-      <PerformanceCard performanceMode={performanceMode} onToggle={onTogglePerformance} />
-      <AnalyticsCard
-        consent={analyticsConsent}
-        onAllow={onAllowAnalytics}
-        onDeny={onDenyAnalytics}
-      />
-      {onUnlock || onRestore ? (
-        <PurchasesCard
-          hasFullGame={hasFullGame}
-          onUnlock={onUnlock}
-          onRestore={onRestore}
-          busy={purchasesBusy}
-        />
-      ) : null}
-      <PrivacyCard onOpen={onOpenPrivacyPolicy} />
+      <button
+        type="button"
+        className="button button-ghost advanced-settings-btn"
+        onClick={onOpenSettings}
+      >
+        Advanced Settings
+      </button>
       <div className="build-footer">
-        <span>Made by</span>
-        <span
-          className="build-footer-logo"
-          role="img"
-          aria-label="Lore & Order"
-          style={{
-            WebkitMaskImage: `url(${loreAndOrderLogo})`,
-            maskImage: `url(${loreAndOrderLogo})`
-          }}
-        />
+        <span className="build-footer-studio">
+          <span className="build-footer-studio-prefix">Made by</span>
+          <span className="build-footer-studio-name">Not Another Studio</span>
+        </span>
+        <button type="button" className="build-footer-privacy" onClick={onOpenPrivacyPolicy}>
+          Privacy Policy
+        </button>
       </div>
     </section>
   );
 }
 
 export default function App() {
-  const difficultyLevels = ["easy", "medium", "hard"];
-  const themes = [
+  const difficultyLevels = DIFFICULTY_IDS;
+  const baseThemes = [
     {
       name: "Tranquil Waters",
       colors: ["#A4D7E1", "#6B9AC4", "#3B5B8C", "#1F3A5F", "#0D1B2A"]
@@ -2179,7 +2533,7 @@ export default function App() {
       kind: "neumorphic",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 12,
+      unlockLevel: 20,
       fullWidth: true,
       showSwatch: false,
       colors: ["#EEF1F5", "#E6EBF1", "#E0E6EE", "#A3AFBC", "#6F7B86"]
@@ -2189,7 +2543,7 @@ export default function App() {
       kind: "ink",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 24,
+      unlockLevel: 40,
       fullWidth: true,
       showSwatch: false,
       colors: ["#F7F4EF", "#EDE7DE", "#DED6C9", "#2F2A24", "#6B5C52"]
@@ -2199,7 +2553,7 @@ export default function App() {
       kind: "paper",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 36,
+      unlockLevel: 60,
       fullWidth: true,
       showSwatch: false,
       colors: ["#F7F1E8", "#F1E7DA", "#E6D8C8", "#C26E4A", "#6C4E3E"]
@@ -2209,7 +2563,7 @@ export default function App() {
       kind: "brutalist",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 48,
+      unlockLevel: 80,
       fullWidth: true,
       showSwatch: false,
       colors: ["#F6F4EF", "#FFFFFF", "#EDE7DE", "#111111", "#FF5A1F"]
@@ -2219,7 +2573,7 @@ export default function App() {
       kind: "glass",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 60,
+      unlockLevel: 100,
       fullWidth: true,
       showSwatch: false,
       colors: ["#0B1324", "#101C33", "#182A4A", "#6AD5FF", "#A77BFF"]
@@ -2229,7 +2583,7 @@ export default function App() {
       kind: "blueprint",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 72,
+      unlockLevel: 120,
       fullWidth: true,
       showSwatch: false,
       colors: ["#081B33", "#0D2340", "#123055", "#5CC0FF", "#D5E8FF"]
@@ -2239,7 +2593,7 @@ export default function App() {
       kind: "synthwave",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 84,
+      unlockLevel: 140,
       fullWidth: true,
       showSwatch: false,
       colors: ["#120526", "#2A0B5A", "#3E0F6E", "#FF5FDB", "#5ED1FF"]
@@ -2249,12 +2603,66 @@ export default function App() {
       kind: "crt",
       includeInRandom: false,
       unlockable: true,
-      unlockLevel: 96,
+      unlockLevel: 160,
       fullWidth: true,
       showSwatch: false,
       colors: ["#07110D", "#0B1B14", "#0F2219", "#21FF8A", "#9BFFD0"]
+    },
+    {
+      name: "Sakura",
+      kind: "sakura",
+      includeInRandom: false,
+      unlockable: true,
+      unlockLevel: 180,
+      fullWidth: true,
+      showSwatch: false,
+      colors: ["#FFE8F0", "#FFD0DE", "#FFB3CC", "#E27DA1", "#A23B6C"]
+    },
+    {
+      name: "Aurora",
+      kind: "aurora",
+      includeInRandom: false,
+      unlockable: true,
+      unlockLevel: 200,
+      fullWidth: true,
+      showSwatch: false,
+      colors: ["#050B22", "#0B1640", "#162960", "#3EE6A9", "#C46BFF"]
     }
   ];
+
+  const [themeUnlockOverrides, setThemeUnlockOverridesState] = useState(() => {
+    try {
+      const raw = storage.getItem("zen_theme_unlock_levels");
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (err) {
+      return {};
+    }
+  });
+  const setThemeUnlockOverride = (themeName, value) => {
+    setThemeUnlockOverridesState((prev) => {
+      const next = { ...prev };
+      const parsed = Math.floor(Number(value));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        next[themeName] = parsed;
+      } else {
+        delete next[themeName];
+      }
+      storage.setItem("zen_theme_unlock_levels", JSON.stringify(next));
+      return next;
+    });
+  };
+  const themes = useMemo(() => {
+    return baseThemes.map((theme) => {
+      if (!theme.unlockable) return theme;
+      const override = themeUnlockOverrides[theme.name];
+      if (Number.isFinite(override) && override > 0) {
+        return { ...theme, unlockLevel: override };
+      }
+      return theme;
+    });
+  }, [themeUnlockOverrides]);
 
   const [themeIndex, setThemeIndex] = useState(() => {
     const savedTheme = Number(storage.getItem("zen_theme_index"));
@@ -2268,8 +2676,9 @@ export default function App() {
   const [themePickerMounted, setThemePickerMounted] = useState(false);
   const initialDifficultyIndex = (() => {
     const savedDifficulty = storage.getItem("zen_difficulty");
-    const idx = difficultyLevels.indexOf(savedDifficulty);
-    return idx === -1 ? 1 : idx;
+    const migrated = LEGACY_DIFFICULTY_MIGRATION[savedDifficulty] || savedDifficulty;
+    const idx = difficultyLevels.indexOf(migrated);
+    return idx === -1 ? difficultyLevels.indexOf("noon") : idx;
   })();
   const [difficultyIndex, setDifficultyIndex] = useState(initialDifficultyIndex);
   const initialSeed = useMemo(() => Math.random().toString(36).slice(2, 8), []);
@@ -2312,8 +2721,38 @@ export default function App() {
     initialAnalyticsConsent === null
   );
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
+  const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+  const [showGameSettings, setShowGameSettings] = useState(false);
+  const settingsSheetDrag = useBottomSheetDrag(() => setShowSettingsSheet(false));
+  const gameSettingsDrag = useBottomSheetDrag(() => setShowGameSettings(false));
+  const levelPickerDrag = useBottomSheetDrag(() => setShowLevelPicker(false));
+  const [difficultySheetSource, setDifficultySheetSource] = useState(null);
+  const [themeSwitcherEnabled, setThemeSwitcherEnabledState] = useState(() => {
+    return storage.getItem("zen_dev_theme_switcher") === "true";
+  });
+  const setThemeSwitcherEnabled = (next) => {
+    setThemeSwitcherEnabledState(next);
+    if (next) {
+      storage.setItem("zen_dev_theme_switcher", "true");
+    } else {
+      storage.removeItem("zen_dev_theme_switcher");
+    }
+  };
   const [screen, setScreen] = useState("home");
   const builderUnlocked = import.meta.env.DEV;
+  const [totalLevels, setTotalLevelsState] = useState(() => {
+    const raw = Number(storage.getItem("zen_total_levels"));
+    if (!Number.isFinite(raw) || raw < MIN_TOTAL_LEVELS) return DEFAULT_TOTAL_LEVELS;
+    return Math.min(MAX_TOTAL_LEVELS, Math.max(MIN_TOTAL_LEVELS, Math.floor(raw)));
+  });
+  const setTotalLevels = (next) => {
+    const clamped = Math.min(
+      MAX_TOTAL_LEVELS,
+      Math.max(MIN_TOTAL_LEVELS, Math.floor(Number(next) || DEFAULT_TOTAL_LEVELS))
+    );
+    setTotalLevelsState(clamped);
+    storage.setItem("zen_total_levels", String(clamped));
+  };
   const [builderSettings, setBuilderSettings] = useState(() => {
     try {
       const raw = storage.getItem("zen_progression_settings");
@@ -2323,6 +2762,10 @@ export default function App() {
     } catch (err) {
       return DEFAULT_PROGRESSION_SETTINGS;
     }
+  });
+  const [builderMode, setBuilderMode] = useState(() => {
+    const raw = storage.getItem("zen_builder_mode");
+    return raw === "advanced" ? "advanced" : "simple";
   });
   const [builderTiles, setBuilderTiles] = useState(() =>
     makeBoard(buildProgressionSeed(builderSettings), "medium")
@@ -2352,12 +2795,12 @@ export default function App() {
   });
   const [isBaking, setIsBaking] = useState(false);
   const [progressionLevels, setProgressionLevels] = useState(() => {
-    const baked = normalizeLevelList(bakedProgressionLevels);
+    const baked = normalizeLevelList(bakedProgressionLevels, totalLevels);
     try {
       const draftRaw = storage.getItem("zen_progression_levels_draft");
       if (draftRaw) {
         const parsed = JSON.parse(draftRaw);
-        const normalized = normalizeLevelList(parsed);
+        const normalized = normalizeLevelList(parsed, totalLevels);
         if (normalized.some((seed) => seed)) {
           return normalized;
         }
@@ -2369,7 +2812,7 @@ export default function App() {
       const raw = storage.getItem("zen_progression_levels");
       if (raw) {
         const parsed = JSON.parse(raw);
-        const normalized = normalizeLevelList(parsed);
+        const normalized = normalizeLevelList(parsed, totalLevels);
         if (normalized.some((seed) => seed)) {
           return normalized;
         }
@@ -2396,7 +2839,7 @@ export default function App() {
       if (!Array.isArray(parsed)) return [];
       return parsed
         .map((value) => Number(value))
-        .filter((value) => Number.isInteger(value) && value >= 1 && value <= TOTAL_LEVELS);
+        .filter((value) => Number.isInteger(value) && value >= 1 && value <= totalLevels);
     } catch (err) {
       return [];
     }
@@ -2405,7 +2848,7 @@ export default function App() {
     const raw = storage.getItem("zen_progress_unlocked");
     const parsed = raw ? Number(raw) : NaN;
     if (!Number.isFinite(parsed) || parsed < 1) return 1;
-    return Math.min(TOTAL_LEVELS, Math.floor(parsed));
+    return Math.min(totalLevels, Math.floor(parsed));
   });
   const hasFullGame = useHasFullGame();
   const priceString = usePriceString();
@@ -2488,9 +2931,36 @@ export default function App() {
     setShowPrivacyPolicy(false);
   };
   const openPaywall = () => {
+    setShowSettingsSheet(false);
+    setShowGameSettings(false);
+    setShowLevelPicker(false);
+    setDifficultySheetSource(null);
     setPaywallError(null);
     setShowPaywall(true);
     emitEvent("paywall_opened");
+  };
+  const handleSelectDifficulty = (tier) => {
+    if (tier.locked && !hasFullGame) {
+      setDifficultySheetSource(null);
+      openPaywall();
+      return;
+    }
+    const nextIndex = difficultyLevels.indexOf(tier.id);
+    if (nextIndex === -1) return;
+    const source = difficultySheetSource;
+    const prevId = difficultyLevels[difficultyIndex];
+    setDifficultyIndex(nextIndex);
+    setDifficultySheetSource(null);
+    emitEvent("difficulty_changed", { mode: "endless", from: prevId, to: tier.id, source });
+    if (source === "home") {
+      endlessStateRef.current = null;
+      setScreen("endless");
+      const nextSeed = Math.random().toString(36).slice(2, 8);
+      setSeedText(nextSeed);
+      regenerate(nextSeed, tier.id, { shuffleTheme: true });
+    } else {
+      regenerate(seedText, tier.id, { shuffleTheme: true });
+    }
   };
   const closePaywall = () => {
     if (paywallBusy) return;
@@ -2531,6 +3001,13 @@ export default function App() {
   }, [themeIndex]);
 
   useEffect(() => {
+    setProgressionLevels((prev) => {
+      if (prev.length >= totalLevels) return prev;
+      return normalizeLevelList(prev, totalLevels);
+    });
+  }, [totalLevels]);
+
+  useEffect(() => {
     if (analyticsConsent === ANALYTICS_CONSENT.GRANTED) {
       initAnalytics();
     }
@@ -2560,6 +3037,26 @@ export default function App() {
   useEffect(() => {
     const ua = window.navigator.userAgent || "";
     setIsIOS(/iphone|ipad|ipod/i.test(ua));
+  }, []);
+
+  useEffect(() => {
+    let removeListener = () => {};
+    onAppStateChange(({ isActive }) => {
+      if (isActive) {
+        if (audioCtxRef.current?.state === "suspended") {
+          audioCtxRef.current.resume();
+        }
+        if (bgAudioRef.current && !bgUserPausedRef.current) {
+          bgAudioRef.current.play().catch(() => {});
+        }
+        refreshEntitlements();
+      } else {
+        if (audioCtxRef.current?.state === "running") {
+          audioCtxRef.current.suspend();
+        }
+      }
+    }).then((remove) => { removeListener = remove; });
+    return () => removeListener();
   }, []);
 
   useEffect(() => {
@@ -2888,6 +3385,10 @@ export default function App() {
   }, [builderSettings]);
 
   useEffect(() => {
+    storage.setItem("zen_builder_mode", builderMode);
+  }, [builderMode]);
+
+  useEffect(() => {
     storage.setItem("zen_progress_completed", JSON.stringify(progressCompletedLevels));
   }, [progressCompletedLevels]);
 
@@ -2949,13 +3450,14 @@ export default function App() {
   }, [difficultyIndex]);
 
   useEffect(() => {
-    if (!hasFullGame && difficultyLevels[difficultyIndex] === "hard") {
-      setDifficultyIndex(1);
+    const currentTier = DIFFICULTY_TIERS[difficultyIndex];
+    if (!hasFullGame && currentTier?.locked) {
+      setDifficultyIndex(difficultyLevels.indexOf("noon"));
     }
   }, [hasFullGame, difficultyIndex]);
 
   useEffect(() => {
-    const indices = Array.from({ length: 10 }, (_, i) => i);
+    const indices = Array.from({ length: audioTracks.length }, (_, i) => i);
     for (let i = indices.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
       [indices[i], indices[j]] = [indices[j], indices[i]];
@@ -3375,6 +3877,17 @@ export default function App() {
     );
   };
 
+  const updateBuilderMeta = (metaKey, value) => {
+    setBuilderSettings((prev) => {
+      const currentMeta = progressionToMeta(prev);
+      const nextMeta = { ...currentMeta, [metaKey]: Number(value) };
+      const deltas = metaToProgressionDeltas(nextMeta);
+      return normalizeProgressionSettings({ ...prev, ...deltas });
+    });
+  };
+
+  const builderMeta = useMemo(() => progressionToMeta(builderSettings), [builderSettings]);
+
   const applyBuilderSeedDraft = () => {
     const cleaned = builderSeedDraft.trim();
     const parsed = parseProgressionSeed(cleaned);
@@ -3432,14 +3945,14 @@ export default function App() {
     skipDraftRef.current = true;
     setProgressionLevels(nextLevels);
     setBuilderViewLevel(levelNumber);
-    if (levelNumber < TOTAL_LEVELS) {
+    if (levelNumber < totalLevels) {
       setBuilderLevel(String(levelNumber + 1));
     }
     handleSaveLevels(nextLevels);
   };
 
   const handleClearLevel = (level) => {
-    if (!Number.isInteger(level) || level < 1 || level > TOTAL_LEVELS) return;
+    if (!Number.isInteger(level) || level < 1 || level > totalLevels) return;
     setProgressionLevels((prev) => {
       const next = [...prev];
       next[level - 1] = "";
@@ -3483,6 +3996,23 @@ export default function App() {
       `${escapeCell(index + 1)},${escapeCell(seed || "")}`
     );
     downloadTextFile("progression-levels.csv", [header, ...rows].join("\n"), "text/csv");
+  };
+
+  const handleLoadFromBundle = () => {
+    if (hasUnsavedLevels) {
+      const ok = window.confirm(
+        "Replace the current level map with the bundled one? Unsaved changes will be lost."
+      );
+      if (!ok) return;
+    }
+    const baked = normalizeLevelList(bakedProgressionLevels, totalLevels);
+    setProgressionLevels(baked);
+    try {
+      storage.removeItem("zen_progression_levels_draft");
+    } catch (err) {
+      // Ignore.
+    }
+    setHasUnsavedLevels(false);
   };
 
   const handleSaveLevels = async (levelsOverride) => {
@@ -3531,7 +4061,7 @@ export default function App() {
     setBuilderSettings(parsed);
     if (Number.isInteger(level)) {
       setBuilderViewLevel(level);
-      const nextTarget = Math.min(TOTAL_LEVELS, level + 1);
+      const nextTarget = Math.min(totalLevels, level + 1);
       setBuilderLevel(String(nextTarget));
     }
   };
@@ -3552,27 +4082,27 @@ export default function App() {
   };
 
   const navigateBuilderLevel = (direction) => {
-    const base = clampValue(builderLevelDisplay, 1, TOTAL_LEVELS);
-    const nextLevel = clampValue(base + direction, 1, TOTAL_LEVELS);
+    const base = clampValue(builderLevelDisplay, 1, totalLevels);
+    const nextLevel = clampValue(base + direction, 1, totalLevels);
     setBuilderViewLevel(nextLevel);
     const seed = progressionLevels[nextLevel - 1];
     if (seed) {
       handleLoadLevelSeed(seed, nextLevel);
     } else {
-      const nextTarget = Math.min(TOTAL_LEVELS, nextLevel + 1);
+      const nextTarget = Math.min(totalLevels, nextLevel + 1);
       setBuilderLevel(String(nextTarget));
     }
   };
 
   const markProgressLevelComplete = (level) => {
-    if (!Number.isInteger(level) || level < 1 || level > TOTAL_LEVELS) return;
+    if (!Number.isInteger(level) || level < 1 || level > totalLevels) return;
     setProgressCompletedLevels((prev) => {
       if (prev.includes(level)) return prev;
       const next = [...prev, level];
       next.sort((a, b) => a - b);
       return next;
     });
-    setProgressUnlockedLevel((prev) => Math.max(prev, Math.min(TOTAL_LEVELS, level + 1)));
+    setProgressUnlockedLevel((prev) => Math.max(prev, Math.min(totalLevels, level + 1)));
   };
 
   const handleSelectProgressLevel = (level) => {
@@ -3786,9 +4316,18 @@ export default function App() {
     });
     return map;
   }, [themes]);
+  const themeUnlockCadence = useMemo(() => {
+    const levels = Array.from(themeUnlockMap.keys()).sort((a, b) => a - b);
+    if (levels.length < 2) return null;
+    return levels[1] - levels[0];
+  }, [themeUnlockMap]);
   const levelEntries = useMemo(
-    () => progressionLevels.map((seed, index) => ({ level: index + 1, seed })),
-    [progressionLevels]
+    () =>
+      Array.from({ length: totalLevels }, (_, index) => ({
+        level: index + 1,
+        seed: progressionLevels[index] || ""
+      })),
+    [progressionLevels, totalLevels]
   );
   const assignedLevels = useMemo(
     () => levelEntries.filter((entry) => Boolean(entry.seed)),
@@ -3803,7 +4342,7 @@ export default function App() {
   }, [assignedLevels]);
   const duplicateSeedLevels = useMemo(() => {
     const seedCounts = new Map();
-    progressionLevels.forEach((seed, index) => {
+    progressionLevels.slice(0, totalLevels).forEach((seed, index) => {
       const trimmed = seed.trim();
       if (!trimmed) return;
       const entry = seedCounts.get(trimmed);
@@ -3821,7 +4360,7 @@ export default function App() {
       }
     });
     return duplicates;
-  }, [progressionLevels]);
+  }, [progressionLevels, totalLevels]);
   const hasDuplicateSeeds = duplicateSeedLevels.size > 0;
   const duplicateSeedList = useMemo(
     () => Array.from(duplicateSeedLevels).sort((a, b) => a - b),
@@ -3851,12 +4390,12 @@ export default function App() {
   const builderTileCount = Math.max(0, totalCells - builderConfig.blanks.min);
   const levelNumber = Number(builderLevel);
   const levelIsValid =
-    Number.isInteger(levelNumber) && levelNumber >= 1 && levelNumber <= TOTAL_LEVELS;
+    Number.isInteger(levelNumber) && levelNumber >= 1 && levelNumber <= totalLevels;
   const assignedSeedForLevel = levelIsValid ? progressionLevels[levelNumber - 1] : "";
   const builderLevelDisplay = clampValue(
     Number.isFinite(builderViewLevel) ? builderViewLevel : 1,
     1,
-    TOTAL_LEVELS
+    totalLevels
   );
   const builderLevelSeed = progressionLevels[builderLevelDisplay - 1] || "";
   const builderLevelHasSeed = Boolean(builderLevelSeed.trim());
@@ -3883,8 +4422,8 @@ export default function App() {
   );
   const isProgressPlayable = isProgress && progressLevelsAvailable;
   const isBoardScreen = isEndless || isProgressPlayable;
-  const isFinalLevel = isProgress && progressLevelNumber === TOTAL_LEVELS;
-  const isProgressionComplete = progressCompletedSet.has(TOTAL_LEVELS);
+  const isFinalLevel = isProgress && progressLevelNumber === totalLevels;
+  const isProgressionComplete = progressCompletedSet.has(totalLevels);
   const unlockableThemeForLevel = useMemo(() => {
     if (!Number.isInteger(progressLevelNumber)) return null;
     return themeUnlockMap.get(progressLevelNumber) || null;
@@ -3937,7 +4476,7 @@ export default function App() {
       return;
     }
     const maxCompleted = Math.max(...progressCompletedLevels);
-    const minUnlocked = Math.min(TOTAL_LEVELS, Math.max(1, maxCompleted + 1));
+    const minUnlocked = Math.min(totalLevels, Math.max(1, maxCompleted + 1));
     setProgressUnlockedLevel((prev) => Math.max(prev, minUnlocked));
   }, [progressCompletedLevels]);
 
@@ -3994,15 +4533,23 @@ export default function App() {
     if (prev !== "progress" && screen === "progress") {
       if (assignedLevels.length > 0) {
         let targetIndex = -1;
-        for (let i = assignedLevels.length - 1; i >= 0; i -= 1) {
-          if (assignedLevels[i].level <= effectiveUnlockedLevel) {
+        for (let i = 0; i < assignedLevels.length; i += 1) {
+          const lvl = assignedLevels[i].level;
+          if (lvl > effectiveUnlockedLevel) break;
+          if (!progressCompletedSet.has(lvl)) {
             targetIndex = i;
             break;
           }
         }
         if (targetIndex === -1) {
-          targetIndex = 0;
+          for (let i = assignedLevels.length - 1; i >= 0; i -= 1) {
+            if (assignedLevels[i].level <= effectiveUnlockedLevel) {
+              targetIndex = i;
+              break;
+            }
+          }
         }
+        if (targetIndex === -1) targetIndex = 0;
         setProgressCursor(targetIndex);
       }
     }
@@ -4131,14 +4678,21 @@ export default function App() {
 
   useEffect(() => {
     const theme = themes[themeIndex];
-    if (themeMode !== "fixed" || !theme?.unlockable) return;
+    if (themeMode !== "fixed" || !theme) return;
+    if (hasFullGame || themeSwitcherEnabled) return;
+    if (theme.nightMode) {
+      setThemeMode("fixed");
+      setThemeIndex(0);
+      return;
+    }
+    if (!theme.unlockable) return;
     const unlockLevel = Number(theme.unlockLevel);
     if (!Number.isFinite(unlockLevel)) return;
     if (!progressCompletedSet.has(unlockLevel)) {
       setThemeMode("fixed");
       setThemeIndex(0);
     }
-  }, [themes, themeIndex, themeMode, progressCompletedSet]);
+  }, [themes, themeIndex, themeMode, progressCompletedSet, hasFullGame, themeSwitcherEnabled]);
 
   useEffect(() => {
     if (levelsInitRef.current) {
@@ -4206,7 +4760,7 @@ export default function App() {
   };
   const isBgPaused = bgIsPaused;
   const isBgLoading = bgIsLoading;
-  const showInstallBanner = !isStandalone && !Capacitor.isNativePlatform();
+  const showInstallBanner = false;
   const isDevBuild = import.meta.env.DEV;
   const installMode = installPromptEvent ? "prompt" : isIOS ? "ios" : "unavailable";
   const handleInstallClick = async () => {
@@ -4239,7 +4793,7 @@ export default function App() {
         <div className="modal-backdrop" onClick={closePrivacyPolicy} role="dialog" aria-modal="true">
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <p className="modal-title">Privacy Policy</p>
-            <p className="modal-subtitle">Last updated: February 8, 2026</p>
+            <p className="modal-subtitle">Last updated: May 19, 2026</p>
 
             <div className="modal-section">
               <p className="modal-subtitle modal-subtitle-spaced">What we collect</p>
@@ -4280,10 +4834,28 @@ export default function App() {
             </div>
 
             <div className="modal-section">
+              <p className="modal-subtitle modal-subtitle-spaced">Purchases</p>
+              <div className="modal-list">
+                <p className="modal-item">
+                  In-app purchases are handled by Apple. We use RevenueCat to verify your purchase and unlock the full game. Neither service receives personal data from inside the app — only the purchase token needed to confirm your entitlement.
+                </p>
+                <p className="modal-item">
+                  Your purchase is tied to your Apple ID, not to any Zento account (we don't have accounts). Restore Purchases is available on the paywall.
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-section">
               <p className="modal-subtitle modal-subtitle-spaced">Processors</p>
               <div className="modal-list">
                 <p className="modal-item">
-                  We use PostHog to process anonymous analytics events after you opt in.
+                  PostHog — anonymous analytics events, only after you opt in.
+                </p>
+                <p className="modal-item">
+                  RevenueCat — in-app purchase verification and entitlement management.
+                </p>
+                <p className="modal-item">
+                  Apple — payment processing for in-app purchases.
                 </p>
               </div>
             </div>
@@ -4307,26 +4879,24 @@ export default function App() {
       ) : null}
       {showPaywall ? (
         <div className="modal-backdrop" onClick={closePaywall} role="dialog" aria-modal="true">
-          <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <p className="modal-title">Unlock Zento</p>
-            <p className="modal-subtitle">Continue the journey.</p>
-            <div className="modal-section">
-              <div className="modal-list">
-                <p className="modal-item">All 96 hand-tuned levels</p>
-                <p className="modal-item">Every theme</p>
-                <p className="modal-item">Hard endless mode</p>
-                <p className="modal-item">One-time purchase. No subscription.</p>
-              </div>
-            </div>
+          <div className="modal paywall-modal" onClick={(event) => event.stopPropagation()}>
+            <p className="modal-title paywall-title">Unlock Zento</p>
+            <p className="modal-subtitle paywall-subtitle">Continue the journey.</p>
+            <ul className="paywall-features">
+              <li>One-time purchase. No subscription.</li>
+              <li>Unlock all {totalLevels} progress mode levels</li>
+              <li>Night mode themes</li>
+              <li>Harder endless modes</li>
+            </ul>
             {paywallError ? (
-              <p className="modal-item" role="alert" style={{ color: "var(--accent-bad, #c33)" }}>
+              <p className="modal-item paywall-error" role="alert">
                 {paywallError}
               </p>
             ) : null}
-            <div className="modal-actions">
+            <div className="modal-actions paywall-actions">
               <button
                 type="button"
-                className="button"
+                className="button paywall-button"
                 onClick={handleUnlock}
                 disabled={paywallBusy}
               >
@@ -4338,7 +4908,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="button button-ghost"
+                className="button button-ghost paywall-button"
                 onClick={handleRestore}
                 disabled={paywallBusy}
               >
@@ -4346,13 +4916,284 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="button button-ghost"
+                className="button button-ghost paywall-button"
                 onClick={closePaywall}
                 disabled={paywallBusy}
               >
                 Not now
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+      {showSettingsSheet ? (
+        <div className="modal-backdrop bottom-sheet-backdrop" onClick={() => setShowSettingsSheet(false)} role="dialog" aria-modal="true">
+          <div ref={settingsSheetDrag.sheetRef} className="modal bottom-sheet settings-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="bottom-sheet-handle bottom-sheet-grab" {...settingsSheetDrag.handleProps} aria-hidden="true" />
+            <p className="modal-title">Settings</p>
+            <PurchasesCard
+              hasFullGame={hasFullGame}
+              onUnlock={openPaywall}
+              onRestore={handleRestore}
+              busy={paywallBusy}
+              totalLevels={totalLevels}
+            />
+            <PerformanceCard performanceMode={performanceMode} onToggle={() => setPerformanceMode((prev) => !prev)} />
+            <AnalyticsCard
+              consent={analyticsConsent}
+              onAllow={() => handleAnalyticsConsent(ANALYTICS_CONSENT.GRANTED)}
+              onDeny={() => handleAnalyticsConsent(ANALYTICS_CONSENT.DENIED)}
+            />
+            <div className="modal-actions">
+              <button type="button" className="button" onClick={() => setShowSettingsSheet(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {builderUnlocked && themeSwitcherEnabled ? (
+        <ThemeSwitcherFab
+          themes={themes}
+          themeIndex={themeIndex}
+          onSelectTheme={(index) => {
+            setThemeIndex(index);
+            setThemeMode("fixed");
+          }}
+          hasFullGame={hasFullGame}
+          onToggleUnlock={() => setDevUnlock(!hasFullGame)}
+        />
+      ) : null}
+      {difficultySheetSource ? (
+        <DifficultySheet
+          tiers={DIFFICULTY_TIERS}
+          hasFullGame={hasFullGame}
+          priceString={priceString}
+          onSelect={handleSelectDifficulty}
+          onUnlock={() => {
+            setDifficultySheetSource(null);
+            openPaywall();
+          }}
+          onClose={() => setDifficultySheetSource(null)}
+        />
+      ) : null}
+      {showGameSettings ? (
+        <div className="modal-backdrop bottom-sheet-backdrop" onClick={() => setShowGameSettings(false)} role="dialog" aria-modal="true">
+          <div ref={gameSettingsDrag.sheetRef} className="modal bottom-sheet game-settings-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="bottom-sheet-handle bottom-sheet-grab" {...gameSettingsDrag.handleProps} aria-hidden="true" />
+            <ThemePanel
+              themeMode={themeMode}
+              themeIndex={themeIndex}
+              themes={themes}
+              unlockedThemeLevels={effectiveUnlockedThemes}
+              hasFullGame={hasFullGame}
+              priceString={priceString}
+              onOpenPaywall={() => {
+                setShowGameSettings(false);
+                openPaywall();
+              }}
+              showThemePicker={showThemePicker}
+              themePickerMounted={themePickerMounted}
+              onTogglePicker={toggleThemePicker}
+              onSelectRandom={selectRandomTheme}
+              onSelectTheme={selectFixedTheme}
+            />
+            <SoundsCard
+              bgVolume={bgVolume}
+              fxVolume={fxVolume}
+              onToggleBg={() =>
+                setBgVolume((prev) =>
+                  prev === 0.6 ? 0 : prev === 0 ? 0.2 : prev === 0.2 ? 0.4 : 0.6
+                )
+              }
+              onToggleFx={() =>
+                setFxVolume((prev) =>
+                  prev === 2.5 ? 0 : prev === 1.6 ? 2.5 : prev === 0 ? 0.6 : prev === 0.6 ? 1.2 : 2.5
+                )
+              }
+              nowPlaying={audioTracks[bgNowPlayingIndex]?.title}
+              onPrev={playPrevBg}
+              onNext={playNextBg}
+              onTogglePlay={toggleBgPlay}
+              isPaused={isBgPaused}
+              isLoading={isBgLoading}
+              audioAttribution={audioAttribution}
+            />
+            <div className="modal-actions">
+              <button type="button" className="button" onClick={() => setShowGameSettings(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isProgress && showLevelPicker ? (
+        <div className="modal-backdrop bottom-sheet-backdrop" onClick={() => setShowLevelPicker(false)} role="dialog" aria-modal="true">
+          <div ref={levelPickerDrag.sheetRef} className="modal bottom-sheet level-picker-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="bottom-sheet-handle bottom-sheet-grab" {...levelPickerDrag.handleProps} aria-hidden="true" />
+            <p className="modal-title level-picker-title">Choose level</p>
+            {themeUnlockCadence ? (
+              <p className="level-picker-blurb">
+                <span className="theme-lock-badge" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path
+                      d="M7 11V8.5a5 5 0 0 1 10 0V11"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                    />
+                    <rect
+                      x="5.5"
+                      y="11"
+                      width="13"
+                      height="9"
+                      rx="2.2"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                    />
+                  </svg>
+                </span>
+                <span>A new theme unlocks every {themeUnlockCadence} levels</span>
+              </p>
+            ) : null}
+            {progressLevelsAvailable ? (
+              <>
+                {isProgressionComplete ? (
+                  <div className="level-picker-banner">
+                    <div className="level-picker-banner-copy">
+                      <p className="level-picker-banner-title">Congratulations</p>
+                      <p className="level-picker-banner-text">
+                        Would you like to reset your progression?
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={handleResetProgression}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                ) : null}
+                <div className="level-grid">
+                  {Array.from({ length: totalLevels }, (_, index) => {
+                    const level = index + 1;
+                    const seed = progressionLevels[index];
+                    const hasSeed = Boolean(seed);
+                    const isUnlocked = level <= effectiveUnlockedLevel;
+                    const isComplete = progressCompletedSet.has(level);
+                    const hasThemeUnlock = themeUnlockMap.has(level);
+                    const themeUnlocked = hasThemeUnlock && isComplete;
+                    const isAvailable = hasSeed && isUnlocked;
+                    const state = isComplete
+                      ? "complete"
+                      : isAvailable
+                        ? "available"
+                        : "unavailable";
+                    const showInlinePaywall = !hasFullGame && level === FREE_MAX_LEVEL + 1;
+                    return (
+                      <React.Fragment key={level}>
+                        {showInlinePaywall ? (
+                          <button
+                            type="button"
+                            className="level-paywall-cta"
+                            onClick={openPaywall}
+                          >
+                            <svg
+                              className="level-paywall-icon"
+                              viewBox="0 0 24 24"
+                              width="16"
+                              height="16"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M7 11V8a5 5 0 0 1 10 0v3"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                              />
+                              <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
+                            </svg>
+                            <span>
+                              {priceString
+                                ? `Unlock all ${totalLevels} levels for ${priceString}`
+                                : `Unlock all ${totalLevels} levels`}
+                            </span>
+                          </button>
+                        ) : null}
+                      <button
+                        type="button"
+                        className="level-card"
+                        data-state={state}
+                        disabled={!isAvailable}
+                        onClick={() => handleSelectProgressLevel(level)}
+                        aria-label={`Level ${level} ${state}`}
+                        title={`Level ${level}`}
+                      >
+                        {hasThemeUnlock ? (
+                          themeUnlocked ? (
+                            <span className="level-check" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M6 12l4 4 8-8"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2.6"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                          ) : (
+                            <span className="theme-lock-badge level-theme-lock" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M7 11V8.5a5 5 0 0 1 10 0V11"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                />
+                                <rect
+                                  x="5.5"
+                                  y="11"
+                                  width="13"
+                                  height="9"
+                                  rx="2.2"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                />
+                              </svg>
+                            </span>
+                          )
+                        ) : isComplete ? (
+                          <span className="level-check" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                              <path
+                                d="M6 12l4 4 8-8"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </span>
+                        ) : null}
+                        <span className="level-number">{level}</span>
+                      </button>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <p className="builder-empty">No progress levels assigned yet.</p>
+            )}
           </div>
         </div>
       ) : null}
@@ -4393,7 +5234,7 @@ export default function App() {
               <button
                 type="button"
                 className="mode-card"
-                onClick={() => setScreen("endless")}
+                onClick={() => setDifficultySheetSource("home")}
               >
                 <div className="mode-graphic mode-graphic-endless" aria-hidden="true">
                   <i className="loader loader--3" aria-hidden="true" />
@@ -4463,9 +5304,11 @@ export default function App() {
               onDenyAnalytics={() => handleAnalyticsConsent(ANALYTICS_CONSENT.DENIED)}
               onOpenPrivacyPolicy={openPrivacyPolicy}
               hasFullGame={hasFullGame}
+              priceString={priceString}
               onUnlock={openPaywall}
               onRestore={handleRestore}
               purchasesBusy={paywallBusy}
+              onOpenSettings={() => setShowSettingsSheet(true)}
             />
             {builderUnlocked ? (
             <div className="home-builder">
@@ -4477,7 +5320,22 @@ export default function App() {
                 <div className="mode-content">
                   <div className="mode-title">Level Builder</div>
                   <p className="mode-copy">
-                    Build a 96-level journey with sliders and seeds.
+                    Build a {totalLevels}-level journey with sliders and seeds.
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                className={`mode-card mode-card-builder mode-card-no-graphic${themeSwitcherEnabled ? " is-active" : ""}`}
+                onClick={() => setThemeSwitcherEnabled(!themeSwitcherEnabled)}
+                aria-pressed={themeSwitcherEnabled}
+              >
+                <div className="mode-content">
+                  <div className="mode-title">Theme Switcher {themeSwitcherEnabled ? "· On" : "· Off"}</div>
+                  <p className="mode-copy">
+                    {themeSwitcherEnabled
+                      ? "Tap the palette button anywhere to swap themes. Tap again to disable."
+                      : "Show a floating palette button to swap themes from any screen."}
                   </p>
                 </div>
               </button>
@@ -4544,7 +5402,7 @@ export default function App() {
               </button>
             </div>
             <p className="builder-subhead">
-              Dial in the sliders, grab the seed, and assign it to levels 1-96.
+              Dial in the sliders, grab the seed, and assign it to levels 1-{totalLevels}.
             </p>
           </header>
 
@@ -4581,7 +5439,7 @@ export default function App() {
                     type="button"
                     className="button button-ghost builder-level-step"
                     onClick={() => navigateBuilderLevel(1)}
-                    disabled={builderLevelDisplay >= TOTAL_LEVELS}
+                    disabled={builderLevelDisplay >= totalLevels}
                     aria-label="Next level"
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -4683,7 +5541,7 @@ export default function App() {
                     type="number"
                     className="input"
                     min="1"
-                    max={TOTAL_LEVELS}
+                    max={totalLevels}
                     step="1"
                     inputMode="numeric"
                     value={builderLevel}
@@ -4712,6 +5570,150 @@ export default function App() {
               </div>
 
               <div className="builder-section builder-sliders">
+                <div className="builder-section-header">
+                  <span className="label">Tuning</span>
+                  <div className="builder-mode-toggle" role="tablist">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={builderMode === "simple"}
+                      className={`builder-mode-button${builderMode === "simple" ? " is-active" : ""}`}
+                      onClick={() => setBuilderMode("simple")}
+                    >
+                      Simple
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={builderMode === "advanced"}
+                      className={`builder-mode-button${builderMode === "advanced" ? " is-active" : ""}`}
+                      onClick={() => setBuilderMode("advanced")}
+                    >
+                      Advanced
+                    </button>
+                  </div>
+                </div>
+
+                {builderMode === "simple" ? (
+                  <>
+                    <div className="builder-slider">
+                      <div className="builder-slider-header">
+                        <span className="label">Difficulty</span>
+                        <span className="builder-slider-value">{builderMeta.difficulty}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={builderMeta.difficulty}
+                        onChange={(event) => updateBuilderMeta("difficulty", event.target.value)}
+                      />
+                      <p className="builder-slider-note">
+                        Easy ← many gaps · packed →  Hard. Auto-scales gap rate and empty-run limits.
+                      </p>
+                    </div>
+
+                    <div className="builder-slider">
+                      <div className="builder-slider-header">
+                        <span className="label">Path Style</span>
+                        <span className="builder-slider-value">{builderMeta.pathStyle}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={builderMeta.pathStyle}
+                        onChange={(event) => updateBuilderMeta("pathStyle", event.target.value)}
+                      />
+                      <p className="builder-slider-note">
+                        Grid (straights) ← → Winding (curves, short runs).
+                      </p>
+                    </div>
+
+                    <div className="builder-slider">
+                      <div className="builder-slider-header">
+                        <span className="label">Gap Layout</span>
+                        <span className="builder-slider-value">{builderMeta.gapLayout}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={builderMeta.gapLayout}
+                        onChange={(event) => updateBuilderMeta("gapLayout", event.target.value)}
+                      />
+                      <p className="builder-slider-note">
+                        One blob at the edges ← → Scattered clumps, tiles centred.
+                      </p>
+                    </div>
+
+                    <div className="builder-slider">
+                      <div className="builder-slider-header">
+                        <span className="label">Terminals</span>
+                        <span className="builder-slider-value">{builderMeta.terminals}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={builderMeta.terminals}
+                        onChange={(event) => updateBuilderMeta("terminals", event.target.value)}
+                      />
+                      <p className="builder-slider-note">
+                        Sparse, spaced out ← → Dense, close together.
+                      </p>
+                    </div>
+
+                    <div className="builder-slider">
+                      <div className="builder-slider-header">
+                        <span className="label">Crosses</span>
+                        <span className="builder-slider-value">{builderMeta.crosses}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={builderMeta.crosses}
+                        onChange={(event) => updateBuilderMeta("crosses", event.target.value)}
+                      />
+                      <p className="builder-slider-note">
+                        How often the 4-way cross piece appears on a board.
+                      </p>
+                    </div>
+
+                    <div className="builder-slider">
+                      <div className="builder-slider-header">
+                        <span className="label">Seed Variant</span>
+                        <span className="builder-slider-value">
+                          <input
+                            type="number"
+                            className="builder-number"
+                            min={PROGRESSION_SETTINGS_RANGES.variant.min}
+                            max={PROGRESSION_SETTINGS_RANGES.variant.max}
+                            step="1"
+                            value={builderSettings.variant}
+                            onChange={(event) =>
+                              updateBuilderSetting("variant", Number(event.target.value))
+                            }
+                          />
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={PROGRESSION_SETTINGS_RANGES.variant.min}
+                        max={PROGRESSION_SETTINGS_RANGES.variant.max}
+                        value={builderSettings.variant}
+                        onChange={(event) =>
+                          updateBuilderSetting("variant", Number(event.target.value))
+                        }
+                      />
+                      <p className="builder-slider-note">
+                        Re-rolls layout without changing the tuning.
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                <>
                 <div className="builder-slider">
                   <div className="builder-slider-header">
                     <span className="label">Gap Frequency</span>
@@ -5025,6 +6027,38 @@ export default function App() {
 
                 <div className="builder-slider">
                   <div className="builder-slider-header">
+                    <span className="label">Cross Pieces</span>
+                    <span className="builder-slider-value">
+                      <input
+                        type="number"
+                        className="builder-number"
+                        min={PROGRESSION_SETTINGS_RANGES.crossRate.min}
+                        max={PROGRESSION_SETTINGS_RANGES.crossRate.max}
+                        step="1"
+                        value={builderSettings.crossRate}
+                        onChange={(event) =>
+                          updateBuilderSetting("crossRate", Number(event.target.value))
+                        }
+                      />
+                      <span className="builder-value-suffix">max per board</span>
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={PROGRESSION_SETTINGS_RANGES.crossRate.min}
+                    max={PROGRESSION_SETTINGS_RANGES.crossRate.max}
+                    value={builderSettings.crossRate}
+                    onChange={(event) =>
+                      updateBuilderSetting("crossRate", Number(event.target.value))
+                    }
+                  />
+                  <p className="builder-slider-note">
+                    Upper bound on the 4-way cross piece count per board.
+                  </p>
+                </div>
+
+                <div className="builder-slider">
+                  <div className="builder-slider-header">
                     <span className="label">Seed Variant</span>
                     <span className="builder-slider-value">
                       <input
@@ -5053,6 +6087,8 @@ export default function App() {
                     Alternate layout without changing sliders.
                   </p>
                 </div>
+                </>
+                )}
               </div>
             </aside>
           </section>
@@ -5076,9 +6112,17 @@ export default function App() {
                   >
                     {isBaking ? "Saving..." : "Save"}
                   </button>
+                  <button
+                    type="button"
+                    className="button button-ghost"
+                    onClick={handleLoadFromBundle}
+                    disabled={isBaking}
+                  >
+                    Load from bundle
+                  </button>
                 </div>
                 <p className="builder-note">
-                  Writes the current map into the game source.
+                  Save writes the current map into the game source. Load from bundle replaces it with the last saved file.
                   {lastSavedLabel ? ` Last saved ${lastSavedLabel}.` : ""}
                 </p>
               </div>
@@ -5092,11 +6136,20 @@ export default function App() {
                 <div className="builder-levels-header">
                   <span className="label">Level Map</span>
                   <span className="builder-count">
-                    {assignedCount}/{TOTAL_LEVELS}
+                    {assignedCount}/
+                    <input
+                      type="number"
+                      className="builder-count-input"
+                      min={MIN_TOTAL_LEVELS}
+                      max={MAX_TOTAL_LEVELS}
+                      value={totalLevels}
+                      onChange={(event) => setTotalLevels(event.target.value)}
+                      aria-label="Total levels"
+                    />
                   </span>
                 </div>
                 <p className="builder-note">
-                  Paste seeds directly into any level and click Save.
+                  Paste seeds directly into any level and click Save. Change the total to grow or shrink the journey — extra seeds remain in storage if you shrink and re-expand.
                 </p>
                 <ul className="builder-level-list">
                   {levelEntries.map(({ level, seed }) => (
@@ -5152,6 +6205,36 @@ export default function App() {
                 </ul>
               </div>
 
+              <div className="builder-section builder-theme-unlocks">
+                <div className="builder-section-header">
+                  <span className="label">Theme Unlocks</span>
+                </div>
+                <p className="builder-note">
+                  Set the level at which each theme unlocks.
+                </p>
+                <ul className="theme-unlock-list">
+                  {themes.filter((theme) => theme.unlockable).map((theme) => (
+                    <li key={theme.name} className="theme-unlock-item">
+                      <span
+                        className="theme-unlock-swatch"
+                        style={{ background: theme.colors?.[2] || theme.colors?.[1] || "#888" }}
+                        aria-hidden="true"
+                      />
+                      <span className="theme-unlock-name">{theme.name}</span>
+                      <input
+                        type="number"
+                        className="theme-unlock-input"
+                        min={1}
+                        max={MAX_TOTAL_LEVELS}
+                        value={theme.unlockLevel ?? ""}
+                        onChange={(event) => setThemeUnlockOverride(theme.name, event.target.value)}
+                        aria-label={`${theme.name} unlock level`}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
               <div className="builder-section builder-export">
                 <div className="builder-section-header">
                   <span className="label">Export</span>
@@ -5169,7 +6252,7 @@ export default function App() {
                   </button>
                 </div>
                 <p className="builder-note">
-                  Exports all {TOTAL_LEVELS} levels (blank seeds stay blank).
+                  Exports all {totalLevels} levels (blank seeds stay blank).
                 </p>
               </div>
 
@@ -5179,144 +6262,123 @@ export default function App() {
       ) : (
         <>
           <header className="top-controls">
-            <div className="header-title-row">
-              <span className="header-title-spacer" aria-hidden="true" />
-              <h1 className="app-title">
-                <Logo
-                  className="logo--header"
-                  interactive
-                  onClick={solveAllButOne}
-                  ariaLabel="Solve all but one tile"
-                  title="Solve all but one tile"
-                />
-              </h1>
-              <span className="header-title-spacer" aria-hidden="true" />
-            </div>
-            <div className="header-controls header-controls-bottom">
-              <div className="header-actions">
-                <button
-                  type="button"
-                  className="button button-ghost home-icon"
-                  onClick={() => setScreen("home")}
-                  aria-label="Back to home"
-                  title="Back to home"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M4 11.5l8-7 8 7"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M6.5 10.5V20h11V10.5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-              </div>
+            <div className="header-title-row header-title-row-game">
+              <button
+                type="button"
+                className="button button-ghost home-icon"
+                onClick={() => setScreen("home")}
+                aria-label="Back to home"
+                title="Back to home"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M4 11.5l8-7 8 7"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M6.5 10.5V20h11V10.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
               {isProgress && progressLevelsAvailable ? (
-                <div className="header-level-inline" aria-live="polite">
-                  <button
-                    type="button"
-                    className={`level-toggle${showLevelPicker ? " is-active" : ""}`}
-                    onClick={toggleLevelPicker}
-                    aria-label={showLevelPicker ? "Hide level picker" : "Show level picker"}
-                    title={showLevelPicker ? "Hide levels" : "Show levels"}
-                    aria-pressed={showLevelPicker}
-                  >
-                    <span className="level-toggle-label">Level {progressLevelNumber}</span>
-                    <span className="level-toggle-icon" aria-hidden="true">
-                      <span className="level-toggle-mid" aria-hidden="true" />
-                    </span>
-                  </button>
-                </div>
-              ) : null}
-              <div className="header-actions header-actions-right">
                 <button
                   type="button"
-                  className={`button${resetSpinning ? " reset-spin" : ""}`}
-                  onClick={() => {
-                    if (resetDisabled || (isProgress && !progressLevelsAvailable)) return;
-                    setResetSpinning(true);
-                    window.setTimeout(() => setResetSpinning(false), 420);
-                    const nextSeed = isProgress ? progressSeed : seedText;
-                    if (!nextSeed) return;
-                    setSeedText(nextSeed);
-                    regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: false });
-                  }}
-                  aria-label="Reset level"
-                  title="Reset"
-                  disabled={resetDisabled || (isProgress && !progressLevelsAvailable)}
+                  className="difficulty-inline-label"
+                  onClick={toggleLevelPicker}
+                  aria-label={showLevelPicker ? "Hide level picker" : "Show level picker"}
+                  title={showLevelPicker ? "Hide levels" : "Show levels"}
+                  aria-pressed={showLevelPicker}
                 >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M17 7a7 7 0 1 0 1.9 6.3"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M19 4.5v4.8h-4.8"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  <span className="difficulty-inline-name">Level {progressLevelNumber}</span>
+                  <span className="difficulty-inline-hint">{showLevelPicker ? "Tap to close" : "Tap to change"}</span>
                 </button>
-                {isEndless ? (
-                  <>
-                    <button
-                      type="button"
-                      className="button button-ghost"
-                      onClick={() => {
-                        const nextSeed = Math.random().toString(36).slice(2, 8);
-                        setSeedText(nextSeed);
-                        regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: true });
-                      }}
-                    >
-                      New level
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-ghost"
-                      onClick={() => {
-                        const nextIndex = (difficultyIndex + 1) % difficultyLevels.length;
-                        if (difficultyLevels[nextIndex] === "hard" && !hasFullGame) {
-                          openPaywall();
-                          return;
-                        }
-                        emitEvent("difficulty_changed", {
-                          mode: "endless",
-                          from: difficultyLevels[difficultyIndex],
-                          to: difficultyLevels[nextIndex]
-                        });
-                        setDifficultyIndex(nextIndex);
-                        regenerate(seedText, difficultyLevels[nextIndex], { shuffleTheme: true });
-                      }}
-                      aria-label="Difficulty"
-                      title="Difficulty"
-                    >
-                      {difficultyLevels[difficultyIndex].charAt(0).toUpperCase() +
-                        difficultyLevels[difficultyIndex].slice(1)}
-                    </button>
-                  </>
-                ) : null}
-              </div>
+              ) : isEndless ? (
+                <button
+                  type="button"
+                  className="difficulty-inline-label"
+                  onClick={() => setDifficultySheetSource("in-game")}
+                  aria-label="Change difficulty"
+                >
+                  <span className="difficulty-inline-name">{DIFFICULTY_TIERS[difficultyIndex]?.label || "Difficulty"}</span>
+                  <span className="difficulty-inline-hint">Tap to change</span>
+                </button>
+              ) : (
+                <span className="header-title-spacer" aria-hidden="true" />
+              )}
+              <button
+                type="button"
+                className="button button-ghost home-icon"
+                onClick={() => setShowGameSettings(true)}
+                aria-label="Settings"
+                title="Settings"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19.14 12.94a7.07 7.07 0 0 0 .06-.94c0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.04 7.04 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.3.59.22l2.39-.96c.5.37 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/>
+                </svg>
+              </button>
             </div>
           </header>
 
           <main className="board-wrap">
+            <div className="board-toolbar">
+              <button
+                type="button"
+                className={`button button-ghost board-toolbar-icon${resetSpinning ? " reset-spin" : ""}`}
+                onClick={() => {
+                  if (resetDisabled || (isProgress && !progressLevelsAvailable)) return;
+                  setResetSpinning(true);
+                  window.setTimeout(() => setResetSpinning(false), 420);
+                  const nextSeed = isProgress ? progressSeed : seedText;
+                  if (!nextSeed) return;
+                  setSeedText(nextSeed);
+                  regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: false });
+                }}
+                aria-label="Reset level"
+                title="Reset"
+                disabled={resetDisabled || (isProgress && !progressLevelsAvailable)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M17 7a7 7 0 1 0 1.9 6.3"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M19 4.5v4.8h-4.8"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              {isEndless ? (
+                <button
+                  type="button"
+                  className="button button-ghost board-toolbar-primary"
+                  onClick={() => {
+                    const nextSeed = Math.random().toString(36).slice(2, 8);
+                    setSeedText(nextSeed);
+                    regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: true });
+                  }}
+                >
+                  New level
+                </button>
+              ) : null}
+            </div>
             {showSuccess && isBoardScreen && !showLevelPicker ? (
               <div className="success-overlay">
                 <div className="success-confetti">
@@ -5463,126 +6525,7 @@ export default function App() {
                 </div>
               </div>
             ) : null}
-            {isProgress && showLevelPicker ? (
-              <div className="level-picker">
-                {progressLevelsAvailable ? (
-                  <>
-                    {isProgressionComplete ? (
-                      <div className="level-picker-banner">
-                        <div className="level-picker-banner-copy">
-                          <p className="level-picker-banner-title">Congratulations</p>
-                          <p className="level-picker-banner-text">
-                            Would you like to reset your progression?
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className="button"
-                          onClick={handleResetProgression}
-                        >
-                          Reset
-                        </button>
-                      </div>
-                    ) : null}
-                    <div className="level-grid">
-                      {Array.from({ length: TOTAL_LEVELS }, (_, index) => {
-                        const level = index + 1;
-                        const seed = progressionLevels[index];
-                        const hasSeed = Boolean(seed);
-                        const isUnlocked = level <= effectiveUnlockedLevel;
-                        const isComplete = progressCompletedSet.has(level);
-                        const hasThemeUnlock = themeUnlockMap.has(level);
-                        const themeUnlocked = hasThemeUnlock && isComplete;
-                        const isAvailable = hasSeed && isUnlocked;
-                        const state = isComplete
-                          ? "complete"
-                          : isAvailable
-                            ? "available"
-                            : "unavailable";
-                        return (
-                          <button
-                            key={level}
-                            type="button"
-                            className="level-card"
-                            data-state={state}
-                            disabled={!isAvailable}
-                            onClick={() => handleSelectProgressLevel(level)}
-                            aria-label={`Level ${level} ${state}`}
-                            title={`Level ${level}`}
-                          >
-                            {hasThemeUnlock ? (
-                              themeUnlocked ? (
-                                <span className="level-check" aria-hidden="true">
-                                  <svg viewBox="0 0 24 24">
-                                    <path
-                                      d="M6 12l4 4 8-8"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="2.6"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  </svg>
-                                </span>
-                              ) : (
-                                <span className="level-theme-lock" aria-hidden="true">
-                                  <svg viewBox="0 0 24 24">
-                                    <path
-                                      d="M7 11V8.5a5 5 0 0 1 10 0V11"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="1.8"
-                                      strokeLinecap="round"
-                                    />
-                                    <rect
-                                      x="5.5"
-                                      y="11"
-                                      width="13"
-                                      height="9"
-                                      rx="2.2"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="1.8"
-                                    />
-                                  </svg>
-                                </span>
-                              )
-                            ) : isComplete ? (
-                              <span className="level-check" aria-hidden="true">
-                                <svg viewBox="0 0 24 24">
-                                  <path
-                                    d="M6 12l4 4 8-8"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2.6"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                              </span>
-                            ) : null}
-                            <span className="level-number">{level}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {!hasFullGame && progressUnlockedLevel >= FREE_MAX_LEVEL ? (
-                      <button
-                        type="button"
-                        className="button paywall-inline-cta"
-                        onClick={openPaywall}
-                      >
-                        {priceString
-                          ? `Unlock all 96 levels for ${priceString}`
-                          : "Unlock all 96 levels"}
-                      </button>
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="builder-empty">No progress levels assigned yet.</p>
-                )}
-              </div>
-            ) : isProgress && !progressLevelsAvailable ? (
+            {isProgress && !progressLevelsAvailable ? (
               <p className="builder-empty">No progress levels assigned yet.</p>
             ) : (
               <div
@@ -5609,42 +6552,6 @@ export default function App() {
             )}
           </main>
 
-          <ControlStack
-            themeMode={themeMode}
-            themeIndex={themeIndex}
-            themes={themes}
-            unlockedThemeLevels={effectiveUnlockedThemes}
-            showThemePicker={showThemePicker}
-            themePickerMounted={themePickerMounted}
-            onTogglePicker={toggleThemePicker}
-            onSelectRandom={selectRandomTheme}
-            onSelectTheme={selectFixedTheme}
-            bgVolume={bgVolume}
-            fxVolume={fxVolume}
-            onToggleBg={() =>
-              setBgVolume((prev) =>
-                prev === 0.6 ? 0 : prev === 0 ? 0.2 : prev === 0.2 ? 0.4 : 0.6
-              )
-            }
-            onToggleFx={() =>
-              setFxVolume((prev) =>
-                prev === 2.5 ? 0 : prev === 1.6 ? 2.5 : prev === 0 ? 0.6 : prev === 0.6 ? 1.2 : 2.5
-              )
-            }
-            nowPlaying={audioTracks[bgNowPlayingIndex]?.title}
-            onPrev={playPrevBg}
-            onNext={playNextBg}
-            onTogglePlay={toggleBgPlay}
-            isPaused={isBgPaused}
-            isLoading={isBgLoading}
-            performanceMode={performanceMode}
-            onTogglePerformance={() => setPerformanceMode((prev) => !prev)}
-            audioAttribution={audioAttribution}
-            showInstallBanner={showInstallBanner}
-            installMode={installMode}
-            isInstalled={isStandalone}
-            onInstall={handleInstallClick}
-          />
         </>
       )}
 
