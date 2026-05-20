@@ -88,13 +88,28 @@ export async function initRevenueCat() {
     console.warn("RevenueCat: no API key configured, skipping init");
     return;
   }
+  // Configure synchronously, but defer the network-heavy calls
+  // (getCustomerInfo, getOfferings). On older iOS where the sandbox
+  // setup is flaky, calling them during boot has caused the StoreKit
+  // XPC service to die and take the WebView with it.
   try {
     await Purchases.configure({ apiKey: import.meta.env.VITE_REVENUECAT_IOS_KEY });
-    await refreshEntitlements();
-    await refreshOfferingPrice();
   } catch (err) {
     console.error("RevenueCat configure failed", err);
+    return;
   }
+  // Run entitlement + offering refresh detached from the boot path.
+  // Each wrapped independently so one failing doesn't cancel the other.
+  setTimeout(() => {
+    refreshEntitlements().catch((err) => {
+      console.error("RevenueCat refreshEntitlements failed", err);
+    });
+  }, 1500);
+  setTimeout(() => {
+    refreshOfferingPrice().catch((err) => {
+      console.error("RevenueCat refreshOfferingPrice failed", err);
+    });
+  }, 2500);
 }
 
 async function refreshOfferingPrice() {

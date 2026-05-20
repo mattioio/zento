@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Capacitor } from "@capacitor/core";
 import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
-import loreAndOrderLogo from "./assets/loreandorder.svg";
 import bakedProgressionLevels from "./progressionLevels.json";
 import { storage } from "./storage.js";
 import {

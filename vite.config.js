@@ -57,6 +57,11 @@ const bakeLevelsPlugin = () => ({
 
 export default defineConfig(({ command }) => ({
   base,
+  build: {
+    // Transpile down to Safari 15 so the bundle runs on iOS 15+ devices,
+    // including older iPads that max out at iOS 17 (e.g. iPad Pro 1st gen).
+    target: ["safari15"]
+  },
   plugins: [
     react(),
     command === "serve" ? bakeLevelsPlugin() : null,
