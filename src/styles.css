@@ -835,11 +835,14 @@ html {
 
 * {
   box-sizing: border-box;
+  touch-action: manipulation;
 }
 
 button {
   font-family: inherit;
   color: inherit;
+  -webkit-appearance: none;
+  appearance: none;
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   touch-action: manipulation;
@@ -851,6 +854,8 @@ body {
   background: var(--bg-start);
   color: var(--ink);
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
@@ -905,7 +910,7 @@ body.perf-mode::before {
   min-height: 100vh;
   min-height: 100svh;
   min-height: 100dvh;
-  gap: 16px;
+  gap: clamp(10px, 2vw, 16px);
   padding: calc(var(--page-pad) + var(--safe-top))
     calc(var(--page-pad) + var(--safe-right))
     calc(var(--page-pad) + var(--safe-bottom))
@@ -932,8 +937,8 @@ body.perf-mode::before {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: clamp(18px, 3.5vw, 28px);
-  padding: clamp(24px, 6vw, 48px) 0;
+  gap: clamp(14px, 3vw, 24px);
+  padding: clamp(16px, 4vw, 36px) 0;
   text-align: left;
 }
 
@@ -966,6 +971,7 @@ body.perf-mode::before {
 @media (max-width: 760px) {
   .home-modes {
     grid-template-columns: 1fr;
+    gap: 14px;
   }
 }
 
@@ -1009,6 +1015,7 @@ body.perf-mode::before {
   bottom: 24px;
   background: var(--surface-bg, rgba(255, 255, 255, 0.94));
   border: 1px solid rgba(30, 27, 23, 0.08);
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   border-radius: 18px;
   padding: 16px 18px;
@@ -1512,10 +1519,13 @@ body.perf-mode::before {
 @media (max-width: 640px) {
   .mode-card {
     grid-template-columns: 1fr;
+    --card-pad: 14px;
+    gap: 10px;
+    min-height: 180px;
   }
 
   .mode-graphic {
-    min-height: 90px;
+    min-height: 80px;
   }
 }
 
@@ -1548,6 +1558,7 @@ body.perf-mode::before {
   display: grid;
   place-items: center;
   background: rgba(12, 12, 12, 0.6);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   border-radius: inherit;
   z-index: 2;
@@ -1985,8 +1996,9 @@ body.perf-mode::before {
   background: rgba(255, 255, 255, 0.8);
   border-radius: var(--card-radius);
   aspect-ratio: 1 / 1;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: var(--card-pad);
   font-family: var(--font-heading);
   font-size: 14px;
@@ -2534,7 +2546,7 @@ body.perf-mode::before {
   border-radius: 999px;
   border: 1px solid var(--tile-border);
   background: #fff;
-  font-size: 14px;
+  font-size: 16px;
   min-width: 160px;
 }
 
@@ -2622,11 +2634,17 @@ body.perf-mode::before {
 
 @media (min-width: 600px) {
   .board {
-    --tile-size-max: 80px;
+    --tile-size-max: 90px;
     max-width: min(
       calc(var(--cols) * var(--tile-size-max) + (var(--cols) - 1) * var(--tile-gap)),
-      calc((100svh - 220px) * 0.6)
+      calc((100svh - 180px) / var(--rows) * var(--cols))
     );
+  }
+}
+
+@media (min-width: 900px) {
+  .board {
+    --tile-size-max: 100px;
   }
 }
 
@@ -3554,7 +3572,6 @@ body.perf-mode::before {
 }
 
 .theme-unlock-input[type="number"] {
-  -moz-appearance: textfield;
 }
 
 .game-settings-sheet .theme-panel-card,
@@ -3619,7 +3636,7 @@ body.perf-mode::before {
   gap: 12px;
   width: 100%;
   flex-shrink: 0;
-  margin-bottom: clamp(20px, 5vw, 40px);
+  margin-bottom: clamp(12px, 3vw, 24px);
 }
 
 .board-toolbar-icon {
@@ -4023,6 +4040,15 @@ body.perf-mode::before {
   justify-content: center;
 }
 
+.settings-version {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  letter-spacing: 0.02em;
+  opacity: 0.6;
+}
+
 .theme-title {
   margin: 0;
   font-size: 11px;
@@ -4171,6 +4197,147 @@ body.perf-mode::before {
   color: var(--ink);
 }
 
+/* --- Privacy Policy (iOS Settings-style) --- */
+
+.privacy-backdrop {
+  padding: 0;
+  align-items: flex-end;
+}
+
+.privacy-sheet {
+  width: 100%;
+  max-width: 600px;
+  max-height: 92vh;
+  background: #f2f2f7;
+  border-radius: 12px 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: privacy-slide-up 0.3s ease-out;
+}
+
+@keyframes privacy-slide-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.privacy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 12px;
+  border-bottom: 0.5px solid rgba(60, 60, 67, 0.12);
+  background: #f2f2f7;
+  flex-shrink: 0;
+}
+
+.privacy-header-spacer {
+  width: 52px;
+}
+
+.privacy-nav-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  font-family: -apple-system, "SF Pro Text", var(--font-body);
+  color: #000;
+  letter-spacing: -0.01em;
+}
+
+.privacy-done {
+  border: none;
+  background: none;
+  color: #007aff;
+  font-size: 17px;
+  font-weight: 600;
+  font-family: -apple-system, "SF Pro Text", var(--font-body);
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  letter-spacing: -0.01em;
+}
+
+.privacy-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 16px 32px;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+}
+
+.privacy-updated {
+  margin: 16px 0 4px;
+  font-size: 13px;
+  color: #8e8e93;
+  text-align: center;
+  font-family: -apple-system, "SF Pro Text", var(--font-body);
+}
+
+.privacy-group-header {
+  margin: 24px 0 6px 16px;
+  font-size: 13px;
+  font-weight: 400;
+  color: #6d6d72;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-family: -apple-system, "SF Pro Text", var(--font-body);
+}
+
+.privacy-group {
+  background: #fff;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.privacy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  font-size: 15px;
+  line-height: 1.4;
+  color: #1c1c1e;
+  font-family: -apple-system, "SF Pro Text", var(--font-body);
+}
+
+.privacy-row + .privacy-row {
+  border-top: 0.5px solid rgba(60, 60, 67, 0.12);
+  margin-left: 16px;
+  padding-left: 0;
+}
+
+.privacy-row-icon {
+  flex-shrink: 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.privacy-row + .privacy-row .privacy-row-icon {
+  margin-left: -12px;
+}
+
+.privacy-row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.privacy-row-service {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.privacy-row-label {
+  font-weight: 500;
+  color: #1c1c1e;
+}
+
+.privacy-row-detail {
+  font-size: 13px;
+  color: #8e8e93;
+  line-height: 1.35;
+}
+
+/* --- End Privacy Policy --- */
+
 .paywall-title {
   text-align: center;
 }
@@ -4266,11 +4433,12 @@ body.perf-mode::before {
 
 @media (min-width: 900px) {
   .board-wrap {
-    padding: clamp(16px, 2vw, 26px) clamp(28px, 6vw, 72px);
+    padding: clamp(14px, 2vw, 22px) clamp(20px, 4vw, 48px);
   }
 }
 
 .app.is-perf .success-overlay {
+  -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
@@ -4581,7 +4749,6 @@ body.perf-mode::before {
 }
 
 .builder-count-input[type="number"] {
-  -moz-appearance: textfield;
 }
 
 .builder-level-list {
@@ -4690,6 +4857,7 @@ body.perf-mode::before {
   }
 
   .success-overlay {
+    -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
 

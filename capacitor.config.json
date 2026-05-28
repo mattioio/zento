@@ -3,11 +3,18 @@
   "appName": "Zento",
   "webDir": "dist",
   "ios": {
-    "allowsLinkPreview": false
+    "allowsLinkPreview": false,
+    "preferredContentMode": "mobile"
   },
   "plugins": {
     "StatusBar": {
       "overlaysWebView": true
+    },
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "launchShowDuration": 0,
+      "backgroundColor": "#f8f0e4",
+      "launchFadeOutDuration": 300
     }
   }
 }

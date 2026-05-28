@@ -55,8 +55,13 @@ const bakeLevelsPlugin = () => ({
   }
 });
 
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf-8"));
+
 export default defineConfig(({ command }) => ({
   base,
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version)
+  },
   build: {
     // Transpile down to Safari 15 so the bundle runs on iOS 15+ devices,
     // including older iPads that max out at iOS 17 (e.g. iPad Pro 1st gen).

@@ -1,6 +1,8 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 
 const isNative = Capacitor.isNativePlatform();
+
+const Review = isNative ? registerPlugin("Review") : null;
 
 let appPluginPromise = null;
 function loadApp() {
@@ -115,6 +117,15 @@ export async function impactMedium() {
     await mod.Haptics.impact({ style: mod.ImpactStyle.Medium });
   } catch (err) {
     // Swallow
+  }
+}
+
+export async function requestReview() {
+  if (!isNative || !Review) return;
+  try {
+    await Review.requestReview();
+  } catch (err) {
+    // Swallow — review prompt failures are non-critical
   }
 }
 

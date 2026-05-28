@@ -19,7 +19,48 @@ import {
   restorePurchases,
   setDevUnlock
 } from "./entitlements.js";
-import { applyStatusBarForBackground, impactLight, impactMedium, onAppStateChange, openExternal } from "./native.js";
+import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, onAppStateChange, openExternal, requestReview } from "./native.js";
+
+// --- Error Boundary ---
+export class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    console.error("Zento crashed:", error, info?.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+          minHeight: "100vh", padding: "2rem", textAlign: "center",
+          background: "radial-gradient(circle at top, #fff7ea 0%, #f2ede4 55%, #e8e0d6 100%)",
+          fontFamily: "'Work Sans', sans-serif", color: "#3b352f",
+        }}>
+          <p style={{ fontSize: "1.1rem", marginBottom: "1.5rem" }}>Something went wrong.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              padding: "12px 28px", fontSize: "1rem", fontFamily: "inherit",
+              border: "none", borderRadius: "12px", cursor: "pointer",
+              background: "rgba(255,255,255,0.6)", color: "#3b352f",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+            }}
+          >
+            Tap to reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const ROWS = 10;
 const COLS = 6;
@@ -2302,9 +2343,7 @@ function CreditsFooter({ audioAttribution }) {
 }
 
 function SoundsCard({
-  bgVolume,
   fxVolume,
-  onToggleBg,
   onToggleFx,
   nowPlaying,
   onPrev,
@@ -2314,8 +2353,7 @@ function SoundsCard({
   isLoading,
   audioAttribution
 }) {
-  const bgLevel = bgVolume === 0 ? 0 : bgVolume <= 0.2 ? 1 : bgVolume <= 0.4 ? 2 : 3;
-  const fxLevel = fxVolume === 0 ? 0 : fxVolume <= 0.6 ? 1 : fxVolume <= 1.2 ? 2 : 3;
+  const fxLevel = fxVolume === 0 ? 0 : fxVolume <= 0.6 ? 1 : fxVolume <= 1.2 ? 2 : fxVolume <= 2.5 ? 3 : 4;
   return (
     <div className="sounds-card theme-panel-card">
       <p className="theme-title">Sounds</p>
@@ -2329,22 +2367,8 @@ function SoundsCard({
         >
           <span className="sound-pill-label">FX Volume</span>
           <span className="sound-meter" aria-hidden="true">
-            {Array.from({ length: 3 }).map((_, idx) => (
+            {Array.from({ length: 4 }).map((_, idx) => (
               <span key={idx} className={`sound-dot${idx < fxLevel ? " is-on" : ""}`} />
-            ))}
-          </span>
-        </button>
-        <button
-          type="button"
-          className={`sound-pill${bgVolume === 0 ? " is-muted" : ""}`}
-          onClick={onToggleBg}
-          aria-label="Music Volume"
-          title="Music Volume"
-        >
-          <span className="sound-pill-label">Music Volume</span>
-          <span className="sound-meter" aria-hidden="true">
-            {Array.from({ length: 3 }).map((_, idx) => (
-              <span key={idx} className={`sound-dot${idx < bgLevel ? " is-on" : ""}`} />
             ))}
           </span>
         </button>
@@ -2373,9 +2397,7 @@ function ControlStack({
   onTogglePicker,
   onSelectRandom,
   onSelectTheme,
-  bgVolume,
   fxVolume,
-  onToggleBg,
   onToggleFx,
   nowPlaying,
   onPrev,
@@ -2422,9 +2444,7 @@ function ControlStack({
         onSelectTheme={onSelectTheme}
       />
       <SoundsCard
-        bgVolume={bgVolume}
         fxVolume={fxVolume}
-        onToggleBg={onToggleBg}
         onToggleFx={onToggleFx}
         nowPlaying={nowPlaying}
         onPrev={onPrev}
@@ -2697,7 +2717,7 @@ export default function App() {
   const [waveActive, setWaveActive] = useState(false);
   const [solvedDim, setSolvedDim] = useState(false);
   const [fxVolume, setFxVolume] = useState(2.5);
-  const [bgVolume, setBgVolume] = useState(0.2);
+  const [bgVolume, setBgVolume] = useState(1);
   const [boardNoise] = useState(1);
   const [rotateSoundIndex, setRotateSoundIndex] = useState(4);
   const [completeSoundIndex, setCompleteSoundIndex] = useState(2);
@@ -2857,6 +2877,11 @@ export default function App() {
   const [showPaywall, setShowPaywall] = useState(false);
   const [paywallBusy, setPaywallBusy] = useState(false);
   const [paywallError, setPaywallError] = useState(null);
+  const endlessSolvesRef = useRef((() => {
+    const raw = Number(storage.getItem("zen_endless_solves"));
+    return Number.isFinite(raw) ? raw : 0;
+  })());
+  const reviewPromptedRef = useRef(storage.getItem("zen_review_prompted") === "true");
   const initialRecentRandomThemes = useMemo(() => {
     try {
       const raw = storage.getItem("zen_recent_random_themes");
@@ -2939,6 +2964,7 @@ export default function App() {
     emitEvent("paywall_opened");
   };
   const handleSelectDifficulty = (tier) => {
+    impactLight();
     if (tier.locked && !hasFullGame) {
       setDifficultySheetSource(null);
       openPaywall();
@@ -2974,8 +3000,12 @@ export default function App() {
       emitEvent("purchase_completed");
       setShowPaywall(false);
     } catch (err) {
-      setPaywallError(err?.message || "Purchase failed. Please try again.");
-      emitEvent("purchase_failed");
+      const msg = err?.message || "";
+      const cancelled = /cancel/i.test(msg) || /userCancelled/i.test(msg);
+      if (!cancelled) {
+        setPaywallError("Something went wrong. Please try again.");
+        emitEvent("purchase_failed");
+      }
     } finally {
       setPaywallBusy(false);
     }
@@ -2988,7 +3018,7 @@ export default function App() {
       await restorePurchases();
       emitEvent("restore_completed");
     } catch (err) {
-      setPaywallError(err?.message || "Restore failed. Please try again.");
+      setPaywallError("Could not restore purchases. Please try again.");
       emitEvent("restore_failed");
     } finally {
       setPaywallBusy(false);
@@ -2998,6 +3028,51 @@ export default function App() {
   useEffect(() => {
     storage.setItem("zen_theme_index", String(themeIndex));
   }, [themeIndex]);
+
+  // iOS scroll lock — prevent background scroll when any modal/sheet is open
+  const anyModalOpen = !!(
+    difficultySheetSource ||
+    showSettingsSheet ||
+    showGameSettings ||
+    showLevelPicker ||
+    showThemePicker ||
+    showAttribution ||
+    showPrivacyPolicy
+  );
+  useEffect(() => {
+    if (!anyModalOpen) return;
+    const scrollY = window.scrollY;
+    const html = document.documentElement;
+    html.style.position = "fixed";
+    html.style.top = `-${scrollY}px`;
+    html.style.left = "0";
+    html.style.right = "0";
+    html.style.overflow = "hidden";
+    return () => {
+      html.style.position = "";
+      html.style.top = "";
+      html.style.left = "";
+      html.style.right = "";
+      html.style.overflow = "";
+      window.scrollTo(0, scrollY);
+    };
+  }, [anyModalOpen]);
+
+  // Prevent pinch-to-zoom on iOS WKWebView (gesturestart is WebKit-only)
+  useEffect(() => {
+    const prevent = (e) => e.preventDefault();
+    document.addEventListener("gesturestart", prevent, { passive: false });
+    document.addEventListener("gesturechange", prevent, { passive: false });
+    return () => {
+      document.removeEventListener("gesturestart", prevent);
+      document.removeEventListener("gesturechange", prevent);
+    };
+  }, []);
+
+  // Hide native splash screen after first meaningful paint
+  useEffect(() => {
+    hideSplash();
+  }, []);
 
   useEffect(() => {
     setProgressionLevels((prev) => {
@@ -3052,6 +3127,9 @@ export default function App() {
       } else {
         if (audioCtxRef.current?.state === "running") {
           audioCtxRef.current.suspend();
+        }
+        if (bgAudioRef.current && !bgAudioRef.current.paused) {
+          bgAudioRef.current.pause();
         }
       }
     }).then((remove) => { removeListener = remove; });
@@ -3588,7 +3666,7 @@ export default function App() {
     filter.type = "lowpass";
     filter.frequency.value = 520;
     amp.gain.value = 0;
-    amp.gain.linearRampToValueAtTime(0.03, ctx.currentTime + 0.06);
+    amp.gain.linearRampToValueAtTime(0.12 * fxVolume, ctx.currentTime + 0.06);
     amp.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.6);
     filter.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 1.4);
     osc.connect(filter);
@@ -3602,26 +3680,26 @@ export default function App() {
   }
 
   const testSounds = [
-    { type: "sine", freq: 180, duration: 0.9, gain: 0.025 },
-    { type: "sine", freq: 220, duration: 0.7, gain: 0.03 },
-    { type: "triangle", freq: 196, duration: 0.8, gain: 0.022 },
-    { type: "triangle", freq: 247, duration: 0.75, gain: 0.02 },
-    { type: "sine", freq: 262, duration: 0.6, gain: 0.02 },
-    { type: "sine", freq: 294, duration: 0.55, gain: 0.018 },
-    { type: "sine", freq: 330, duration: 0.5, gain: 0.016 },
-    { type: "triangle", freq: 174, duration: 0.9, gain: 0.02 },
-    { type: "sine", freq: 196, duration: 1.1, gain: 0.02, sweepTo: 240 },
-    { type: "sine", freq: 220, duration: 1.1, gain: 0.02, sweepTo: 180 },
-    { type: "sine", freq: 246, duration: 1.2, gain: 0.018, sweepTo: 200 },
-    { type: "sine", freq: 180, duration: 0.6, gain: 0.02, lowpass: 500 },
-    { type: "sine", freq: 210, duration: 0.7, gain: 0.02, lowpass: 450 },
-    { type: "sine", freq: 240, duration: 0.8, gain: 0.02, lowpass: 380 },
-    { type: "noise", duration: 0.5, gain: 0.018, bandpass: 650 },
-    { type: "noise", duration: 0.7, gain: 0.02, bandpass: 520 },
-    { type: "noise", duration: 0.9, gain: 0.02, bandpass: 420 },
-    { type: "sine", freq: 196, duration: 1.4, gain: 0.018, sweepTo: 164, lowpass: 420 },
-    { type: "sine", freq: 233, duration: 1.3, gain: 0.017, sweepTo: 196, lowpass: 360 },
-    { type: "sine", freq: 262, duration: 1.2, gain: 0.016, sweepTo: 220, lowpass: 320 }
+    { type: "sine", freq: 180, duration: 0.9, gain: 0.10 },
+    { type: "sine", freq: 220, duration: 0.7, gain: 0.12 },
+    { type: "triangle", freq: 196, duration: 0.8, gain: 0.085 },
+    { type: "triangle", freq: 247, duration: 0.75, gain: 0.08 },
+    { type: "sine", freq: 262, duration: 0.6, gain: 0.08 },
+    { type: "sine", freq: 294, duration: 0.55, gain: 0.07 },
+    { type: "sine", freq: 330, duration: 0.5, gain: 0.06 },
+    { type: "triangle", freq: 174, duration: 0.9, gain: 0.08 },
+    { type: "sine", freq: 196, duration: 1.1, gain: 0.08, sweepTo: 240 },
+    { type: "sine", freq: 220, duration: 1.1, gain: 0.08, sweepTo: 180 },
+    { type: "sine", freq: 246, duration: 1.2, gain: 0.07, sweepTo: 200 },
+    { type: "sine", freq: 180, duration: 0.6, gain: 0.08, lowpass: 500 },
+    { type: "sine", freq: 210, duration: 0.7, gain: 0.08, lowpass: 450 },
+    { type: "sine", freq: 240, duration: 0.8, gain: 0.08, lowpass: 380 },
+    { type: "noise", duration: 0.5, gain: 0.07, bandpass: 650 },
+    { type: "noise", duration: 0.7, gain: 0.08, bandpass: 520 },
+    { type: "noise", duration: 0.9, gain: 0.08, bandpass: 420 },
+    { type: "sine", freq: 196, duration: 1.4, gain: 0.07, sweepTo: 164, lowpass: 420 },
+    { type: "sine", freq: 233, duration: 1.3, gain: 0.065, sweepTo: 196, lowpass: 360 },
+    { type: "sine", freq: 262, duration: 1.2, gain: 0.06, sweepTo: 220, lowpass: 320 }
   ];
 
   const completeMelodies = [
@@ -3647,8 +3725,9 @@ export default function App() {
     [19, 1, 3]
   ];
 
-  function playTestSound(index) {
-    if (fxVolume === 0) return;
+  function playTestSound(index, volumeOverride) {
+    const vol = volumeOverride ?? fxVolume;
+    if (vol === 0) return;
     const ctx = ensureAudioReady();
     const preset = testSounds[index % testSounds.length];
     if (preset.type === "noise") {
@@ -3665,7 +3744,7 @@ export default function App() {
       filter.Q.value = 1.2;
       const amp = ctx.createGain();
       amp.gain.value = 0;
-      amp.gain.linearRampToValueAtTime(preset.gain * fxVolume, ctx.currentTime + 0.02);
+      amp.gain.linearRampToValueAtTime(preset.gain * vol, ctx.currentTime + 0.02);
       amp.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + preset.duration);
       source.connect(filter);
       filter.connect(amp);
@@ -3690,7 +3769,7 @@ export default function App() {
       node = filter;
     }
     amp.gain.value = 0;
-    amp.gain.linearRampToValueAtTime(preset.gain * fxVolume, ctx.currentTime + 0.03);
+    amp.gain.linearRampToValueAtTime(preset.gain * vol, ctx.currentTime + 0.03);
     amp.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + preset.duration);
     node.connect(amp);
     amp.connect(ctx.destination);
@@ -3735,7 +3814,7 @@ export default function App() {
         osc.type = "sine";
         osc.frequency.value = freq;
         amp.gain.value = 0;
-        amp.gain.linearRampToValueAtTime(0.025 * fxVolume, ctx.currentTime + 0.02);
+        amp.gain.linearRampToValueAtTime(0.10 * fxVolume, ctx.currentTime + 0.02);
         amp.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
         osc.connect(amp);
         amp.connect(ctx.destination);
@@ -3768,7 +3847,7 @@ export default function App() {
     const trackUrl = new URL(trackPath, baseUrl).toString();
     const audio = new Audio(trackUrl);
     audio.loop = false;
-    audio.volume = Math.min(1.0, bgVolume * 0.4);
+    audio.volume = bgVolume > 0 ? 1.0 : 0;
     audio.onplay = () => {
       setBgIsLoading(false);
       syncBgPaused(false);
@@ -3802,6 +3881,7 @@ export default function App() {
   }
 
   function playNextBg() {
+    impactLight();
     if (bgQueue.length === 0) return;
     bgUserPausedRef.current = false;
     const nextPos = (bgQueuePos + 1) % bgQueue.length;
@@ -3811,6 +3891,7 @@ export default function App() {
   }
 
   function playPrevBg() {
+    impactLight();
     if (bgQueue.length === 0) return;
     bgUserPausedRef.current = false;
     const prevPos = (bgQueuePos - 1 + bgQueue.length) % bgQueue.length;
@@ -3831,7 +3912,7 @@ export default function App() {
       startAmbient();
       return;
     }
-    bgAudioRef.current.volume = Math.min(1.0, bgVolume * 0.4);
+    bgAudioRef.current.volume = bgVolume > 0 ? 1.0 : 0;
   }, [bgVolume]);
 
   useEffect(() => {
@@ -4105,6 +4186,7 @@ export default function App() {
   };
 
   const handleSelectProgressLevel = (level) => {
+    impactLight();
     const index = assignedLevelIndexByNumber.get(level);
     if (index === undefined) return;
     progressShuffleThemeRef.current = themeMode === "random";
@@ -4134,6 +4216,7 @@ export default function App() {
   };
 
   const toggleLevelPicker = () => {
+    impactLight();
     setShowLevelPicker((prev) => {
       const next = !prev;
       if (next) {
@@ -4657,6 +4740,26 @@ export default function App() {
         setSuccessMessage(nextMessage);
         setShowSuccess(true);
         impactMedium();
+
+        // Review prompt triggers
+        if (!reviewPromptedRef.current) {
+          let shouldPrompt = false;
+          if (isProgress && progressLevelNumber === 50) {
+            shouldPrompt = true;
+          }
+          if (!isProgress) {
+            endlessSolvesRef.current += 1;
+            storage.setItem("zen_endless_solves", String(endlessSolvesRef.current));
+            if (endlessSolvesRef.current === 50) {
+              shouldPrompt = true;
+            }
+          }
+          if (shouldPrompt) {
+            reviewPromptedRef.current = true;
+            storage.setItem("zen_review_prompted", "true");
+            window.setTimeout(() => requestReview(), 1500);
+          }
+        }
       }, successDelay);
     }
     if (!solved && prevSolvedRef.current) {
@@ -4710,6 +4813,7 @@ export default function App() {
     }
   }, [progressionLevels]);
   const toggleThemePicker = () => {
+    impactLight();
     if (showThemePicker) {
       setShowThemePicker(false);
       window.setTimeout(() => setThemePickerMounted(false), 260);
@@ -4719,11 +4823,13 @@ export default function App() {
     }
   };
   const selectRandomTheme = () => {
+    impactLight();
     setThemeMode("random");
     setShowThemePicker(false);
     window.setTimeout(() => setThemePickerMounted(false), 260);
   };
   const selectFixedTheme = (index) => {
+    impactLight();
     const theme = themes[index];
     if (theme?.unlockable) {
       const unlockLevel = Number(theme.unlockLevel);
@@ -4738,10 +4844,11 @@ export default function App() {
     window.setTimeout(() => setThemePickerMounted(false), 260);
   };
   const toggleBgPlay = () => {
+    impactLight();
     if (!bgAudioRef.current) {
       bgUserPausedRef.current = false;
       if (bgVolume === 0) {
-        setBgVolume(0.2);
+        setBgVolume(1);
         return;
       }
       startAmbient();
@@ -4789,89 +4896,86 @@ export default function App() {
     >
       {isDevBuild ? <div className="dev-badge">DEV</div> : null}
       {showPrivacyPolicy ? (
-        <div className="modal-backdrop" onClick={closePrivacyPolicy} role="dialog" aria-modal="true">
-          <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <p className="modal-title">Privacy Policy</p>
-            <p className="modal-subtitle">Last updated: May 19, 2026</p>
-
-            <div className="modal-section">
-              <p className="modal-subtitle modal-subtitle-spaced">What we collect</p>
-              <div className="modal-list">
-                <p className="modal-item">
-                  Anonymous gameplay events (mode started, board started/completed, level number for
-                  progress mode).
-                </p>
-                <p className="modal-item">
-                  Device and app context (viewport size, device pixel ratio, browser, OS, PWA
-                  install status).
-                </p>
-              </div>
+        <div className="modal-backdrop privacy-backdrop" onClick={closePrivacyPolicy} role="dialog" aria-modal="true">
+          <div className="privacy-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="privacy-header">
+              <div className="privacy-header-spacer" />
+              <p className="privacy-nav-title">Privacy Policy</p>
+              <button type="button" className="privacy-done" onClick={closePrivacyPolicy}>Done</button>
             </div>
+            <div className="privacy-scroll">
+              <p className="privacy-updated">Last updated May 19, 2026</p>
 
-            <div className="modal-section">
-              <p className="modal-subtitle modal-subtitle-spaced">How we use it</p>
-              <div className="modal-list">
-                <p className="modal-item">
-                  Improve balance, performance, and device support.
-                </p>
-                <p className="modal-item">
-                  Understand mode usage and level completion rates.
-                </p>
-              </div>
-            </div>
-
-            <div className="modal-section">
-              <p className="modal-subtitle modal-subtitle-spaced">Your choices</p>
-              <div className="modal-list">
-                <p className="modal-item">
-                  Analytics are off by default. Opt in or out anytime in Settings.
-                </p>
-                <p className="modal-item">
-                  Clearing site data in your browser removes stored analytics identifiers.
-                </p>
-              </div>
-            </div>
-
-            <div className="modal-section">
-              <p className="modal-subtitle modal-subtitle-spaced">Purchases</p>
-              <div className="modal-list">
-                <p className="modal-item">
-                  In-app purchases are handled by Apple. We use RevenueCat to verify your purchase and unlock the full game. Neither service receives personal data from inside the app — only the purchase token needed to confirm your entitlement.
-                </p>
-                <p className="modal-item">
-                  Your purchase is tied to your Apple ID, not to any Zento account (we don't have accounts). Restore Purchases is available on the paywall.
-                </p>
-              </div>
-            </div>
-
-            <div className="modal-section">
-              <p className="modal-subtitle modal-subtitle-spaced">Processors</p>
-              <div className="modal-list">
-                <p className="modal-item">
-                  PostHog — anonymous analytics events, only after you opt in.
-                </p>
-                <p className="modal-item">
-                  RevenueCat — in-app purchase verification and entitlement management.
-                </p>
-                <p className="modal-item">
-                  Apple — payment processing for in-app purchases.
-                </p>
-              </div>
-            </div>
-
-            {privacyContact ? (
-              <div className="modal-section">
-                <p className="modal-subtitle modal-subtitle-spaced">Contact</p>
-                <div className="modal-list">
-                  <p className="modal-item">{privacyContact}</p>
+              <p className="privacy-group-header">What we collect</p>
+              <div className="privacy-group">
+                <div className="privacy-row">
+                  <span className="privacy-row-icon" aria-hidden="true">📊</span>
+                  <span className="privacy-row-text">Anonymous gameplay events — mode started, board started/completed, level number for progress mode</span>
+                </div>
+                <div className="privacy-row">
+                  <span className="privacy-row-icon" aria-hidden="true">📱</span>
+                  <span className="privacy-row-text">Device and app context — viewport size, pixel ratio, browser, OS, install status</span>
                 </div>
               </div>
-            ) : null}
 
-            <div className="modal-actions">
-              <button type="button" className="button" onClick={closePrivacyPolicy}>
-                Close
-              </button>
+              <p className="privacy-group-header">How we use it</p>
+              <div className="privacy-group">
+                <div className="privacy-row">
+                  <span className="privacy-row-text">Improve balance, performance, and device support</span>
+                </div>
+                <div className="privacy-row">
+                  <span className="privacy-row-text">Understand mode usage and level completion rates</span>
+                </div>
+              </div>
+
+              <p className="privacy-group-header">Your choices</p>
+              <div className="privacy-group">
+                <div className="privacy-row">
+                  <span className="privacy-row-icon" aria-hidden="true">🔒</span>
+                  <span className="privacy-row-text">Analytics are off by default. Opt in or out anytime in Settings.</span>
+                </div>
+                <div className="privacy-row">
+                  <span className="privacy-row-icon" aria-hidden="true">🗑</span>
+                  <span className="privacy-row-text">Clearing app data removes stored analytics identifiers</span>
+                </div>
+              </div>
+
+              <p className="privacy-group-header">Purchases</p>
+              <div className="privacy-group">
+                <div className="privacy-row">
+                  <span className="privacy-row-text">In-app purchases are handled by Apple. We use RevenueCat to verify your purchase and unlock the full game. Neither service receives personal data from inside the app.</span>
+                </div>
+                <div className="privacy-row">
+                  <span className="privacy-row-text">Your purchase is tied to your Apple ID, not to any Zento account. Restore Purchases is available on the paywall.</span>
+                </div>
+              </div>
+
+              <p className="privacy-group-header">Third-party services</p>
+              <div className="privacy-group">
+                <div className="privacy-row privacy-row-service">
+                  <span className="privacy-row-label">PostHog</span>
+                  <span className="privacy-row-detail">Anonymous analytics, only after opt-in</span>
+                </div>
+                <div className="privacy-row privacy-row-service">
+                  <span className="privacy-row-label">RevenueCat</span>
+                  <span className="privacy-row-detail">Purchase verification and entitlements</span>
+                </div>
+                <div className="privacy-row privacy-row-service">
+                  <span className="privacy-row-label">Apple</span>
+                  <span className="privacy-row-detail">Payment processing for in-app purchases</span>
+                </div>
+              </div>
+
+              {privacyContact ? (
+                <>
+                  <p className="privacy-group-header">Contact</p>
+                  <div className="privacy-group">
+                    <div className="privacy-row">
+                      <span className="privacy-row-text">{privacyContact}</span>
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
@@ -4948,6 +5052,7 @@ export default function App() {
                 Done
               </button>
             </div>
+            <p className="settings-version">Zento v{__APP_VERSION__}</p>
           </div>
         </div>
       ) : null}
@@ -4998,18 +5103,13 @@ export default function App() {
               onSelectTheme={selectFixedTheme}
             />
             <SoundsCard
-              bgVolume={bgVolume}
               fxVolume={fxVolume}
-              onToggleBg={() =>
-                setBgVolume((prev) =>
-                  prev === 0.6 ? 0 : prev === 0 ? 0.2 : prev === 0.2 ? 0.4 : 0.6
-                )
-              }
-              onToggleFx={() =>
-                setFxVolume((prev) =>
-                  prev === 2.5 ? 0 : prev === 1.6 ? 2.5 : prev === 0 ? 0.6 : prev === 0.6 ? 1.2 : 2.5
-                )
-              }
+              onToggleFx={() => {
+                impactLight();
+                const nextVol = fxVolume === 4.0 ? 0 : fxVolume === 2.5 ? 4.0 : fxVolume === 0 ? 0.6 : fxVolume === 0.6 ? 1.2 : fxVolume === 1.2 ? 2.5 : 4.0;
+                setFxVolume(nextVol);
+                playTestSound(rotateSoundIndex, nextVol);
+              }}
               nowPlaying={audioTracks[bgNowPlayingIndex]?.title}
               onPrev={playPrevBg}
               onNext={playNextBg}
@@ -5233,7 +5333,7 @@ export default function App() {
               <button
                 type="button"
                 className="mode-card"
-                onClick={() => setDifficultySheetSource("home")}
+                onClick={() => { impactLight(); setDifficultySheetSource("home"); }}
               >
                 <div className="mode-graphic mode-graphic-endless" aria-hidden="true">
                   <i className="loader loader--3" aria-hidden="true" />
@@ -5248,7 +5348,7 @@ export default function App() {
               <button
                 type="button"
                 className="mode-card"
-                onClick={() => setScreen("progress")}
+                onClick={() => { impactLight(); setScreen("progress"); }}
               >
                 <div className="mode-graphic mode-graphic-progression" aria-hidden="true">
                   <i className="loader loader--8" aria-hidden="true" />
@@ -5273,18 +5373,13 @@ export default function App() {
               onTogglePicker={toggleThemePicker}
               onSelectRandom={selectRandomTheme}
               onSelectTheme={selectFixedTheme}
-              bgVolume={bgVolume}
               fxVolume={fxVolume}
-              onToggleBg={() =>
-                setBgVolume((prev) =>
-                  prev === 0.6 ? 0 : prev === 0 ? 0.2 : prev === 0.2 ? 0.4 : 0.6
-                )
-              }
-              onToggleFx={() =>
-                setFxVolume((prev) =>
-                  prev === 2.5 ? 0 : prev === 1.6 ? 2.5 : prev === 0 ? 0.6 : prev === 0.6 ? 1.2 : 2.5
-                )
-              }
+              onToggleFx={() => {
+                impactLight();
+                const nextVol = fxVolume === 4.0 ? 0 : fxVolume === 2.5 ? 4.0 : fxVolume === 0 ? 0.6 : fxVolume === 0.6 ? 1.2 : fxVolume === 1.2 ? 2.5 : 4.0;
+                setFxVolume(nextVol);
+                playTestSound(rotateSoundIndex, nextVol);
+              }}
               nowPlaying={audioTracks[bgNowPlayingIndex]?.title}
               onPrev={playPrevBg}
               onNext={playNextBg}
@@ -5292,7 +5387,7 @@ export default function App() {
               isPaused={isBgPaused}
               isLoading={isBgLoading}
               performanceMode={performanceMode}
-              onTogglePerformance={() => setPerformanceMode((prev) => !prev)}
+              onTogglePerformance={() => { impactLight(); setPerformanceMode((prev) => !prev); }}
               audioAttribution={audioAttribution}
               showInstallBanner={showInstallBanner}
               installMode={installMode}
@@ -5307,7 +5402,7 @@ export default function App() {
               onUnlock={openPaywall}
               onRestore={handleRestore}
               purchasesBusy={paywallBusy}
-              onOpenSettings={() => setShowSettingsSheet(true)}
+              onOpenSettings={() => { impactLight(); setShowSettingsSheet(true); }}
             />
             {builderUnlocked ? (
             <div className="home-builder">
@@ -5349,7 +5444,7 @@ export default function App() {
               <button
                 type="button"
                 className="button button-ghost home-icon"
-                onClick={() => setScreen("home")}
+                onClick={() => { impactLight(); setScreen("home"); }}
                 aria-label="Back to home"
                 title="Back to home"
               >
@@ -6265,7 +6360,7 @@ export default function App() {
               <button
                 type="button"
                 className="button button-ghost home-icon"
-                onClick={() => setScreen("home")}
+                onClick={() => { impactLight(); setScreen("home"); }}
                 aria-label="Back to home"
                 title="Back to home"
               >
@@ -6304,7 +6399,7 @@ export default function App() {
                 <button
                   type="button"
                   className="difficulty-inline-label"
-                  onClick={() => setDifficultySheetSource("in-game")}
+                  onClick={() => { impactLight(); setDifficultySheetSource("in-game"); }}
                   aria-label="Change difficulty"
                 >
                   <span className="difficulty-inline-name">{DIFFICULTY_TIERS[difficultyIndex]?.label || "Difficulty"}</span>
@@ -6316,7 +6411,7 @@ export default function App() {
               <button
                 type="button"
                 className="button button-ghost home-icon"
-                onClick={() => setShowGameSettings(true)}
+                onClick={() => { impactLight(); setShowGameSettings(true); }}
                 aria-label="Settings"
                 title="Settings"
               >
@@ -6334,6 +6429,7 @@ export default function App() {
                 className={`button button-ghost board-toolbar-icon${resetSpinning ? " reset-spin" : ""}`}
                 onClick={() => {
                   if (resetDisabled || (isProgress && !progressLevelsAvailable)) return;
+                  impactLight();
                   setResetSpinning(true);
                   window.setTimeout(() => setResetSpinning(false), 420);
                   const nextSeed = isProgress ? progressSeed : seedText;
@@ -6369,6 +6465,7 @@ export default function App() {
                   type="button"
                   className="button button-ghost board-toolbar-primary"
                   onClick={() => {
+                    impactLight();
                     const nextSeed = Math.random().toString(36).slice(2, 8);
                     setSeedText(nextSeed);
                     regenerate(nextSeed, difficultyLevels[difficultyIndex], { shuffleTheme: true });
@@ -6426,6 +6523,7 @@ export default function App() {
                               type="button"
                               className="button success-action"
                               onClick={() => {
+                                impactLight();
                                 cancelFinalAnimations();
                                 setShowFinalSuccess(false);
                                 setShowLevelPicker(false);
@@ -6438,6 +6536,7 @@ export default function App() {
                               type="button"
                               className="button button-ghost success-action"
                               onClick={() => {
+                                impactLight();
                                 cancelFinalAnimations();
                                 setShowFinalSuccess(false);
                                 setShowLevelPicker(false);
@@ -6453,6 +6552,7 @@ export default function App() {
                               type="button"
                               className="button success-action"
                               onClick={() => {
+                                impactLight();
                                 setShowSuccess(false);
                                 if (!progressSeed) return;
                                 setSeedText(progressSeed);
@@ -6467,6 +6567,7 @@ export default function App() {
                               disabled={!hasNextProgressLevel}
                               onClick={() => {
                                 if (!hasNextProgressLevel) return;
+                                impactLight();
                                 setShowSuccess(false);
                                 if (!nextProgressLevel) return;
                                 handleSelectProgressLevel(nextProgressLevel.level);
@@ -6482,6 +6583,7 @@ export default function App() {
                             type="button"
                             className="button success-action"
                             onClick={() => {
+                              impactLight();
                               setShowSuccess(false);
                               regenerate(seedText, difficultyLevels[difficultyIndex], { shuffleTheme: false });
                             }}
@@ -6492,6 +6594,7 @@ export default function App() {
                             type="button"
                             className="button button-ghost success-action"
                             onClick={() => {
+                              impactLight();
                               setShowSuccess(false);
                               const nextSeed = Math.random().toString(36).slice(2, 8);
                               setSeedText(nextSeed);
