@@ -143,6 +143,22 @@ export async function isOtherAudioPlaying() {
   }
 }
 
+// Fires when another app starts ({ playing: true }) or stops ({ playing: false })
+// its audio while Zento is running — so we can duck our music out and back in.
+export async function onOtherAudioChange(callback) {
+  if (!isNative || !AudioSession) return () => {};
+  const handle = await AudioSession.addListener("otherAudioChanged", callback);
+  return () => handle.remove();
+}
+
+// Fires on audio interruptions — phone calls, Siri, alarms.
+// { state: "began" } | { state: "ended", shouldResume: boolean }
+export async function onAudioInterruption(callback) {
+  if (!isNative || !AudioSession) return () => {};
+  const handle = await AudioSession.addListener("interruption", callback);
+  return () => handle.remove();
+}
+
 export async function openExternal(url) {
   if (!url) return;
   if (!isNative) {

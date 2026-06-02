@@ -19,7 +19,7 @@ import {
   restorePurchases,
   setDevUnlock
 } from "./entitlements.js";
-import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, openExternal, requestReview } from "./native.js";
+import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, onAudioInterruption, onOtherAudioChange, openExternal, requestReview } from "./native.js";
 
 // --- Error Boundary ---
 export class ErrorBoundary extends React.Component {
@@ -2911,6 +2911,12 @@ export default function App() {
   const bgAudioRef = useRef(null);
   const bgFadeRef = useRef(null);
   const bgUserPausedRef = useRef(false);
+  // True when we auto-paused for the user's own audio or an interruption (call/
+  // Siri). Lets us resume afterward — but only if the user didn't pause it too.
+  const bgDuckedRef = useRef(false);
+  // Mirror of bgVolume so playback helpers invoked from mount-time listeners
+  // (duck/resume, app-state) always read the current value, not a stale closure.
+  const bgVolumeRef = useRef(bgVolume);
   const hasInteractedRef = useRef(false);
   const [installPromptEvent, setInstallPromptEvent] = useState(null);
   const [isStandalone, setIsStandalone] = useState(false);
@@ -3157,11 +3163,20 @@ export default function App() {
           audioCtxRef.current.resume();
         }
         if (bgAudioRef.current && !bgUserPausedRef.current) {
-          // A fade may have been cancelled when backgrounding mid-ramp; restore
-          // full volume on resume so it can't get stuck partway.
-          cancelBgFade();
-          bgAudioRef.current.volume = bgVolume > 0 ? 1.0 : 0;
-          bgAudioRef.current.play().catch(() => {});
+          // Don't resume over the user's own audio if they started some while
+          // we were away; otherwise restore full volume (a fade may have been
+          // cancelled mid-ramp when backgrounding) and play.
+          isOtherAudioPlaying().then((busy) => {
+            if (!bgAudioRef.current) return;
+            if (busy) {
+              bgDuckedRef.current = true;
+              syncBgPaused(true);
+              return;
+            }
+            cancelBgFade();
+            bgAudioRef.current.volume = bgVolumeRef.current > 0 ? 1.0 : 0;
+            bgAudioRef.current.play().catch(() => {});
+          });
         }
         refreshEntitlements();
       } else {
@@ -3175,6 +3190,43 @@ export default function App() {
       }
     }).then((remove) => { removeListener = remove; });
     return () => removeListener();
+  }, []);
+
+  // Yield to the user's own audio (and calls/Siri) live: duck our music out
+  // when theirs starts, bring it back when it stops — unless they paused ours.
+  useEffect(() => {
+    let removeOther = () => {};
+    let removeInterruption = () => {};
+
+    const duck = () => {
+      if (bgAudioRef.current && !bgAudioRef.current.paused) {
+        cancelBgFade();
+        bgAudioRef.current.pause();
+        syncBgPaused(true);
+        bgDuckedRef.current = true;
+      }
+    };
+    const unduck = () => {
+      if (!bgDuckedRef.current || bgUserPausedRef.current) return;
+      bgDuckedRef.current = false;
+      if (bgAudioRef.current) {
+        attemptBgPlay(bgAudioRef.current, { fade: true });
+      } else if (bgVolumeRef.current > 0) {
+        startAmbient(undefined, { fade: true });
+      }
+    };
+
+    onOtherAudioChange(({ playing }) => {
+      if (playing) duck();
+      else unduck();
+    }).then((remove) => { removeOther = remove; });
+
+    onAudioInterruption(({ state, shouldResume }) => {
+      if (state === "began") duck();
+      else if (state === "ended" && shouldResume) unduck();
+    }).then((remove) => { removeInterruption = remove; });
+
+    return () => { removeOther(); removeInterruption(); };
   }, []);
 
   useEffect(() => {
@@ -3476,6 +3528,7 @@ export default function App() {
   }, [completeSoundIndex]);
 
   useEffect(() => {
+    bgVolumeRef.current = bgVolume;
     storage.setItem("zen_bg_volume", String(bgVolume));
   }, [bgVolume]);
 
@@ -3661,7 +3714,7 @@ export default function App() {
   const attemptBgPlay = (audio, { fade = false } = {}) => {
     if (!audio) return;
     setBgIsLoading(true);
-    const target = bgVolume > 0 ? 1.0 : 0;
+    const target = bgVolumeRef.current > 0 ? 1.0 : 0;
     if (fade) audio.volume = 0;
     const playPromise = audio.play();
     const onPlaying = () => {
@@ -3703,7 +3756,7 @@ export default function App() {
 
   function ensureAudioReady() {
     const ctx = ensureAudioContext();
-    if (bgVolume > 0) {
+    if (bgVolumeRef.current > 0) {
       if (bgUserPausedRef.current) {
         return ctx;
       }
@@ -3924,7 +3977,7 @@ export default function App() {
   }
 
   function startAmbient(forcedPos, { fade = false } = {}) {
-    if (bgVolume == 0) return;
+    if (bgVolumeRef.current == 0) return;
     if (bgQueue.length === 0) return;
     bgUserPausedRef.current = false;
     const position = typeof forcedPos === "number" ? forcedPos : bgQueuePos;
@@ -3938,7 +3991,7 @@ export default function App() {
     const trackUrl = new URL(trackPath, baseUrl).toString();
     const audio = new Audio(trackUrl);
     audio.loop = false;
-    audio.volume = bgVolume > 0 ? 1.0 : 0;
+    audio.volume = bgVolumeRef.current > 0 ? 1.0 : 0;
     audio.onplay = () => {
       setBgIsLoading(false);
       syncBgPaused(false);
@@ -4941,6 +4994,8 @@ export default function App() {
   };
   const toggleBgPlay = () => {
     impactLight();
+    // Manual control overrides any auto-duck state.
+    bgDuckedRef.current = false;
     if (!bgAudioRef.current) {
       bgUserPausedRef.current = false;
       if (bgVolume === 0) {
