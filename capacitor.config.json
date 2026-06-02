@@ -3,8 +3,7 @@
   "appName": "Zento",
   "webDir": "dist",
   "ios": {
-    "allowsLinkPreview": false,
-    "preferredContentMode": "mobile"
+    "allowsLinkPreview": false
   },
   "plugins": {
     "StatusBar": {

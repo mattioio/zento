@@ -72,7 +72,7 @@ export default defineConfig(({ command }) => ({
     command === "serve" ? bakeLevelsPlugin() : null,
     VitePWA({
       registerType: "autoUpdate",
-      injectRegister: "auto",
+      injectRegister: null,
       includeAssets: [
         "icons/*.png",
         "icons/*.svg"
