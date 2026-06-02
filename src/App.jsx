@@ -2909,6 +2909,7 @@ export default function App() {
   const seedEditingRef = useRef(false);
   const audioCtxRef = useRef(null);
   const bgAudioRef = useRef(null);
+  const bgFadeRef = useRef(null);
   const bgUserPausedRef = useRef(false);
   const hasInteractedRef = useRef(false);
   const [installPromptEvent, setInstallPromptEvent] = useState(null);
@@ -3156,6 +3157,10 @@ export default function App() {
           audioCtxRef.current.resume();
         }
         if (bgAudioRef.current && !bgUserPausedRef.current) {
+          // A fade may have been cancelled when backgrounding mid-ramp; restore
+          // full volume on resume so it can't get stuck partway.
+          cancelBgFade();
+          bgAudioRef.current.volume = bgVolume > 0 ? 1.0 : 0;
           bgAudioRef.current.play().catch(() => {});
         }
         refreshEntitlements();
@@ -3164,6 +3169,7 @@ export default function App() {
           audioCtxRef.current.suspend();
         }
         if (bgAudioRef.current && !bgAudioRef.current.paused) {
+          cancelBgFade();
           bgAudioRef.current.pause();
         }
       }
@@ -3625,23 +3631,58 @@ export default function App() {
     setBgIsPaused(bgAudioRef.current?.paused ?? true);
   };
 
-  const attemptBgPlay = (audio) => {
+  const cancelBgFade = () => {
+    if (bgFadeRef.current != null) {
+      cancelAnimationFrame(bgFadeRef.current);
+      bgFadeRef.current = null;
+    }
+  };
+
+  // Gently ramp the background track from silence up to its target volume.
+  // Used on auto-start so the music eases in rather than beginning abruptly.
+  const fadeBgVolume = (audio, target, durationMs = 10000) => {
+    cancelBgFade();
+    if (!audio) return;
+    audio.volume = 0;
+    const startTime = performance.now();
+    const tick = (now) => {
+      const p = Math.min(1, (now - startTime) / durationMs);
+      audio.volume = target * p;
+      if (p < 1) {
+        bgFadeRef.current = requestAnimationFrame(tick);
+      } else {
+        audio.volume = target;
+        bgFadeRef.current = null;
+      }
+    };
+    bgFadeRef.current = requestAnimationFrame(tick);
+  };
+
+  const attemptBgPlay = (audio, { fade = false } = {}) => {
     if (!audio) return;
     setBgIsLoading(true);
+    const target = bgVolume > 0 ? 1.0 : 0;
+    if (fade) audio.volume = 0;
     const playPromise = audio.play();
+    const onPlaying = () => {
+      setBgIsLoading(false);
+      syncBgPaused(false);
+      if (fade) {
+        fadeBgVolume(audio, target);
+      } else {
+        cancelBgFade();
+        audio.volume = target;
+      }
+    };
     if (playPromise && typeof playPromise.then === "function") {
       playPromise
-        .then(() => {
-          setBgIsLoading(false);
-          syncBgPaused(false);
-        })
+        .then(onPlaying)
         .catch(() => {
           setBgIsLoading(false);
           syncBgPaused(true);
         });
     } else {
-      setBgIsLoading(false);
-      syncBgPaused(audio.paused);
+      onPlaying();
     }
   };
 
@@ -3652,9 +3693,9 @@ export default function App() {
         return ctx;
       }
       if (!bgAudioRef.current) {
-        startAmbient();
+        startAmbient(undefined, { fade: true });
       } else if (bgAudioRef.current.paused) {
-        attemptBgPlay(bgAudioRef.current);
+        attemptBgPlay(bgAudioRef.current, { fade: true });
       }
     }
     return ctx;
@@ -3867,7 +3908,7 @@ export default function App() {
     playCompleteMelody(completeSoundIndex);
   }
 
-  function startAmbient(forcedPos) {
+  function startAmbient(forcedPos, { fade = false } = {}) {
     if (bgVolume == 0) return;
     if (bgQueue.length === 0) return;
     bgUserPausedRef.current = false;
@@ -3899,10 +3940,11 @@ export default function App() {
     bgAudioRef.current = audio;
     syncBgPaused(true);
     setBgIsLoading(true);
-    attemptBgPlay(audio);
+    attemptBgPlay(audio, { fade });
   }
 
   function stopAmbient() {
+    cancelBgFade();
     if (!bgAudioRef.current) {
       syncBgPaused(true);
       setBgIsLoading(false);
@@ -3937,7 +3979,8 @@ export default function App() {
 
   useEffect(() => {
     if (bgVolume > 0 && bgQueue.length > 0 && !bgAudioRef.current) {
-      startAmbient();
+      // Auto-start on first load — ease the music in over ~10s.
+      startAmbient(undefined, { fade: true });
     }
     return () => stopAmbient();
   }, [bgQueue]);
@@ -3947,6 +3990,8 @@ export default function App() {
       startAmbient();
       return;
     }
+    // Manual volume change snaps immediately; stop any in-flight fade first.
+    cancelBgFade();
     bgAudioRef.current.volume = bgVolume > 0 ? 1.0 : 0;
   }, [bgVolume]);
 
@@ -4894,6 +4939,7 @@ export default function App() {
       attemptBgPlay(bgAudioRef.current);
     } else {
       bgUserPausedRef.current = true;
+      cancelBgFade();
       bgAudioRef.current.pause();
       syncBgPaused(true);
       setBgIsLoading(false);
