@@ -19,7 +19,7 @@ import {
   restorePurchases,
   setDevUnlock
 } from "./entitlements.js";
-import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, onAppStateChange, openExternal, requestReview } from "./native.js";
+import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, openExternal, requestReview } from "./native.js";
 
 // --- Error Boundary ---
 export class ErrorBoundary extends React.Component {
@@ -3686,6 +3686,21 @@ export default function App() {
     }
   };
 
+  // Auto-start ambient music, but yield to the user's own audio: if Music,
+  // Spotify, a podcast, etc. is already playing, stay silent so we don't talk
+  // over their choice — they can still start ours manually. The native check
+  // resolves false on web, so web behavior is unchanged.
+  function maybeAutoStartAmbient() {
+    isOtherAudioPlaying().then((otherPlaying) => {
+      if (bgAudioRef.current) return;
+      if (otherPlaying) {
+        syncBgPaused(true);
+        return;
+      }
+      startAmbient(undefined, { fade: true });
+    });
+  }
+
   function ensureAudioReady() {
     const ctx = ensureAudioContext();
     if (bgVolume > 0) {
@@ -3693,7 +3708,7 @@ export default function App() {
         return ctx;
       }
       if (!bgAudioRef.current) {
-        startAmbient(undefined, { fade: true });
+        maybeAutoStartAmbient();
       } else if (bgAudioRef.current.paused) {
         attemptBgPlay(bgAudioRef.current, { fade: true });
       }
@@ -3979,8 +3994,9 @@ export default function App() {
 
   useEffect(() => {
     if (bgVolume > 0 && bgQueue.length > 0 && !bgAudioRef.current) {
-      // Auto-start on first load — ease the music in over ~10s.
-      startAmbient(undefined, { fade: true });
+      // Auto-start on first load (eased in over ~10s) — unless the user is
+      // already playing their own audio, in which case we stay out of the way.
+      maybeAutoStartAmbient();
     }
     return () => stopAmbient();
   }, [bgQueue]);

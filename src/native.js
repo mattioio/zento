@@ -3,6 +3,7 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 const isNative = Capacitor.isNativePlatform();
 
 const Review = isNative ? registerPlugin("Review") : null;
+const AudioSession = isNative ? registerPlugin("AudioSession") : null;
 
 let appPluginPromise = null;
 function loadApp() {
@@ -126,6 +127,19 @@ export async function requestReview() {
     await Review.requestReview();
   } catch (err) {
     // Swallow — review prompt failures are non-critical
+  }
+}
+
+// True when another app (Music, Spotify, a podcast, etc.) is already playing
+// audio. Used to avoid auto-starting our music over the user's own choice.
+// Resolves false on web / if anything goes wrong, so playback isn't blocked.
+export async function isOtherAudioPlaying() {
+  if (!isNative || !AudioSession) return false;
+  try {
+    const { playing } = await AudioSession.isOtherAudioPlaying();
+    return !!playing;
+  } catch (err) {
+    return false;
   }
 }
 

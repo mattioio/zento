@@ -15,6 +15,7 @@
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		34ED53112FC60A0000EA41C0 /* ReviewPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34ED53102FC60A0000EA41C0 /* ReviewPlugin.swift */; };
 		34ED53132FC80B0000EA41C0 /* ZentoViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34ED53122FC80B0000EA41C0 /* ZentoViewController.swift */; };
+		34ED53152FC80C0000EA41C0 /* AudioSessionPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34ED53142FC80C0000EA41C0 /* AudioSessionPlugin.swift */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
@@ -31,6 +32,7 @@
 		504EC3041FED79650016851F /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		34ED53102FC60A0000EA41C0 /* ReviewPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewPlugin.swift; sourceTree = "<group>"; };
 		34ED53122FC80B0000EA41C0 /* ZentoViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZentoViewController.swift; sourceTree = "<group>"; };
+		34ED53142FC80C0000EA41C0 /* AudioSessionPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionPlugin.swift; sourceTree = "<group>"; };
 		504EC3071FED79650016851F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		504EC30C1FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		504EC30E1FED79650016851F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -88,6 +90,7 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				34ED53102FC60A0000EA41C0 /* ReviewPlugin.swift */,
 				34ED53122FC80B0000EA41C0 /* ZentoViewController.swift */,
+				34ED53142FC80C0000EA41C0 /* AudioSessionPlugin.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -185,6 +188,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				34ED53112FC60A0000EA41C0 /* ReviewPlugin.swift in Sources */,
 				34ED53132FC80B0000EA41C0 /* ZentoViewController.swift in Sources */,
+				34ED53152FC80C0000EA41C0 /* AudioSessionPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
