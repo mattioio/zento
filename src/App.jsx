@@ -2703,14 +2703,15 @@ export default function App() {
   const initialSeed = useMemo(() => Math.random().toString(36).slice(2, 8), []);
   const [seedText, setSeedText] = useState(initialSeed);
   const initialDifficulty = difficultyLevels[initialDifficultyIndex];
-  const initialTiles = useMemo(
-    () => makeBoard(initialSeed, initialDifficulty),
-    [initialSeed, initialDifficulty]
-  );
-  const [tiles, setTiles] = useState(initialTiles);
-  const [initialRotations, setInitialRotations] = useState(() =>
-    initialTiles.map((tile) => tile.rotation)
-  );
+  // Board generation runs a constraint solver (up to 60 attempts) and is the
+  // single most expensive piece of work at startup. The home screen never shows
+  // a board, and every game entry calls regenerate(), so we start with an empty
+  // board and build the first one after the initial paint (see effect below).
+  // This keeps first paint cheap and the main thread responsive — WKWebView was
+  // flagging the web process as unresponsive during boot, which can surface as a
+  // blank launch screen on slower devices (the App Store rejection reason).
+  const [tiles, setTiles] = useState([]);
+  const [initialRotations, setInitialRotations] = useState([]);
   const [resetSpinning, setResetSpinning] = useState(false);
   const [pulseDelays, setPulseDelays] = useState(new Map());
   const [waveDelays, setWaveDelays] = useState(new Map());
@@ -2842,12 +2843,10 @@ export default function App() {
     return baked;
   });
   const [progressCursor, setProgressCursor] = useState(0);
-  const endlessStateRef = useRef({
-    seedText: initialSeed,
-    tiles: initialTiles,
-    initialRotations: initialTiles.map((tile) => tile.rotation),
-    difficultyIndex: initialDifficultyIndex
-  });
+  // Holds a saved endless session to resume; null until the player has started
+  // one. The first board is generated lazily after paint, so there's no
+  // pre-seeded board here.
+  const endlessStateRef = useRef(null);
   const prevScreenRef = useRef(screen);
   const [showLevelPicker, setShowLevelPicker] = useState(false);
   const [progressCompletedLevels, setProgressCompletedLevels] = useState(() => {
@@ -3029,13 +3028,15 @@ export default function App() {
     storage.setItem("zen_theme_index", String(themeIndex));
   }, [themeIndex]);
 
-  // iOS scroll lock — prevent background scroll when any modal/sheet is open
+  // iOS scroll lock — prevent background scroll when any modal/sheet is open.
+  // Note: showThemePicker is an inline accordion (expands within the page), not
+  // an overlay, so it must NOT lock scroll. When it lives inside the game
+  // settings sheet, showGameSettings already holds the lock.
   const anyModalOpen = !!(
     difficultySheetSource ||
     showSettingsSheet ||
     showGameSettings ||
     showLevelPicker ||
-    showThemePicker ||
     showAttribution ||
     showPrivacyPolicy
   );
@@ -3072,6 +3073,24 @@ export default function App() {
   // Hide native splash screen after first meaningful paint
   useEffect(() => {
     hideSplash();
+  }, []);
+
+  // Generate the first board once, after the initial paint, so the expensive
+  // constraint solver never blocks startup. Entering a game calls regenerate()
+  // anyway; this just makes a board ready ahead of time and seeds the endless
+  // resume fallback (matching the previous synchronous behavior).
+  useEffect(() => {
+    const firstBoard = makeBoard(initialSeed, initialDifficulty);
+    const rotations = firstBoard.map((tile) => tile.rotation);
+    setTiles(firstBoard);
+    setInitialRotations(rotations);
+    endlessStateRef.current = {
+      seedText: initialSeed,
+      tiles: firstBoard,
+      initialRotations: rotations,
+      difficultyIndex: initialDifficultyIndex
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
