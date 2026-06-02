@@ -128,7 +128,7 @@ export default defineConfig(({ command }) => ({
       },
       workbox: {
         globPatterns: [
-          "**/*.{js,css,html,svg,ico,png,webmanifest}"
+          "**/*.{js,css,html,svg,ico,png,webmanifest,woff2}"
         ],
         runtimeCaching: [
           {

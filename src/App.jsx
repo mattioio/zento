@@ -3070,9 +3070,25 @@ export default function App() {
     };
   }, []);
 
-  // Hide native splash screen after first meaningful paint
+  // Hide the native splash only once the web fonts are ready. The splash shows
+  // the wordmark in the correct font, so keeping it up until fonts load means no
+  // flash of fallback text (FOUT) when the web content appears. Fonts are
+  // bundled locally and preloaded, so this resolves almost immediately; the 2s
+  // backstop (and main.jsx's 4s net) guarantee the splash never sticks.
   useEffect(() => {
-    hideSplash();
+    let done = false;
+    const reveal = () => {
+      if (done) return;
+      done = true;
+      hideSplash();
+    };
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(reveal);
+    } else {
+      reveal();
+    }
+    const backstop = setTimeout(reveal, 2000);
+    return () => clearTimeout(backstop);
   }, []);
 
   // Generate the first board once, after the initial paint, so the expensive
