@@ -4651,6 +4651,9 @@ export default function App() {
   const hasNextProgressLevel = Boolean(
     nextProgressLevel && nextProgressLevel.level <= effectiveUnlockedLevel
   );
+  const nextProgressLevelLocked = Boolean(
+    isProgress && !hasFullGame && nextProgressLevel && !hasNextProgressLevel
+  );
   const isProgressPlayable = isProgress && progressLevelsAvailable;
   const isBoardScreen = isEndless || isProgressPlayable;
   const isFinalLevel = isProgress && progressLevelNumber === totalLevels;
@@ -6667,7 +6670,7 @@ export default function App() {
                       </div>
                     </div>
                     <p className="success-title">{successTitle}</p>
-                    <div className="success-actions">
+                    <div className={`success-actions${nextProgressLevelLocked ? " success-actions--stacked" : ""}`}>
                       {isProgress ? (
                         showFinalSuccess ? (
                           <>
@@ -6702,7 +6705,7 @@ export default function App() {
                           <>
                             <button
                               type="button"
-                              className="button success-action"
+                              className={nextProgressLevelLocked ? "button button-ghost success-action" : "button success-action"}
                               onClick={() => {
                                 impactLight();
                                 setShowSuccess(false);
@@ -6715,9 +6718,15 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              className="button button-ghost success-action"
-                              disabled={!hasNextProgressLevel}
+                              className={nextProgressLevelLocked ? "button success-action" : "button button-ghost success-action"}
+                              disabled={!hasNextProgressLevel && !nextProgressLevelLocked}
                               onClick={() => {
+                                if (nextProgressLevelLocked) {
+                                  impactLight();
+                                  setShowSuccess(false);
+                                  openPaywall();
+                                  return;
+                                }
                                 if (!hasNextProgressLevel) return;
                                 impactLight();
                                 setShowSuccess(false);
@@ -6725,7 +6734,7 @@ export default function App() {
                                 handleSelectProgressLevel(nextProgressLevel.level);
                               }}
                             >
-                              Next level
+                              {nextProgressLevelLocked ? "Unlock to keep playing" : "Next level"}
                             </button>
                           </>
                         )

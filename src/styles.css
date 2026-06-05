@@ -1710,12 +1710,37 @@ body.perf-mode::before {
   white-space: nowrap;
 }
 
+@media (max-width: 480px) {
+  .success-unlock-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .success-unlock-copy {
+    text-align: center;
+  }
+
+  .success-unlock-cta {
+    width: 100%;
+  }
+}
+
 .success-actions {
   display: flex;
   gap: 10px;
   justify-content: center;
   flex-wrap: wrap;
   margin-top: 4px;
+}
+
+.success-actions--stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.success-actions--stacked .success-action {
+  width: 100%;
 }
 
 .success-action {
