@@ -17,6 +17,7 @@ import {
   purchaseFullGame,
   refreshEntitlements,
   restorePurchases,
+  getHasFullGame,
   setDevUnlock
 } from "./entitlements.js";
 import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, onAudioInterruption, onOtherAudioChange, openExternal, requestReview } from "./native.js";
@@ -2876,6 +2877,7 @@ export default function App() {
   const [showPaywall, setShowPaywall] = useState(false);
   const [paywallBusy, setPaywallBusy] = useState(false);
   const [paywallError, setPaywallError] = useState(null);
+  const pendingContinueLevelRef = useRef(null);
   const endlessSolvesRef = useRef((() => {
     const raw = Number(storage.getItem("zen_endless_solves"));
     return Number.isFinite(raw) ? raw : 0;
@@ -2961,6 +2963,7 @@ export default function App() {
     setShowPrivacyPolicy(false);
   };
   const openPaywall = () => {
+    pendingContinueLevelRef.current = null;
     setShowSettingsSheet(false);
     setShowGameSettings(false);
     setShowLevelPicker(false);
@@ -2995,7 +2998,16 @@ export default function App() {
   };
   const closePaywall = () => {
     if (paywallBusy) return;
+    pendingContinueLevelRef.current = null;
     setShowPaywall(false);
+  };
+  // After a successful unlock that originated from a level gate ("Unlock to
+  // keep playing"), drop the player straight into the level they were trying
+  // to reach instead of leaving them on the just-solved board.
+  const consumePendingContinue = () => {
+    const level = pendingContinueLevelRef.current;
+    pendingContinueLevelRef.current = null;
+    if (level != null) handleSelectProgressLevel(level);
   };
   const handleUnlock = async () => {
     if (paywallBusy) return;
@@ -3005,6 +3017,7 @@ export default function App() {
       await purchaseFullGame();
       emitEvent("purchase_completed");
       setShowPaywall(false);
+      consumePendingContinue();
     } catch (err) {
       const msg = err?.message || "";
       const cancelled = /cancel/i.test(msg) || /userCancelled/i.test(msg);
@@ -3022,7 +3035,14 @@ export default function App() {
     setPaywallError(null);
     try {
       await restorePurchases();
-      emitEvent("restore_completed");
+      if (getHasFullGame()) {
+        emitEvent("restore_completed");
+        setShowPaywall(false);
+        consumePendingContinue();
+      } else {
+        emitEvent("restore_empty");
+        setPaywallError("No purchases to restore.");
+      }
     } catch (err) {
       setPaywallError("Could not restore purchases. Please try again.");
       emitEvent("restore_failed");
@@ -6725,6 +6745,7 @@ export default function App() {
                                   impactLight();
                                   setShowSuccess(false);
                                   openPaywall();
+                                  pendingContinueLevelRef.current = nextProgressLevel?.level ?? null;
                                   return;
                                 }
                                 if (!hasNextProgressLevel) return;
