@@ -4,6 +4,7 @@ import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import bakedProgressionLevels from "./progressionLevels.json";
 import { storage } from "./storage.js";
+import { maybePromptForReview, notePaywallActivity, recordPlayDay } from "./reviewPrompt.js";
 import {
   ANALYTICS_CONSENT,
   getAnalyticsConsent,
@@ -20,7 +21,7 @@ import {
   getHasFullGame,
   setDevUnlock
 } from "./entitlements.js";
-import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, onAudioInterruption, onOtherAudioChange, openExternal, requestReview } from "./native.js";
+import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, onAudioInterruption, onOtherAudioChange, openExternal } from "./native.js";
 
 // --- Error Boundary ---
 export class ErrorBoundary extends React.Component {
@@ -2878,11 +2879,6 @@ export default function App() {
   const [paywallBusy, setPaywallBusy] = useState(false);
   const [paywallError, setPaywallError] = useState(null);
   const pendingContinueLevelRef = useRef(null);
-  const endlessSolvesRef = useRef((() => {
-    const raw = Number(storage.getItem("zen_endless_solves"));
-    return Number.isFinite(raw) ? raw : 0;
-  })());
-  const reviewPromptedRef = useRef(storage.getItem("zen_review_prompted") === "true");
   const initialRecentRandomThemes = useMemo(() => {
     try {
       const raw = storage.getItem("zen_recent_random_themes");
@@ -2970,6 +2966,7 @@ export default function App() {
     setDifficultySheetSource(null);
     setPaywallError(null);
     setShowPaywall(true);
+    notePaywallActivity();
     emitEvent("paywall_opened");
   };
   const handleSelectDifficulty = (tier) => {
@@ -3000,6 +2997,7 @@ export default function App() {
     if (paywallBusy) return;
     pendingContinueLevelRef.current = null;
     setShowPaywall(false);
+    notePaywallActivity();
   };
   // After a successful unlock that originated from a level gate ("Unlock to
   // keep playing"), drop the player straight into the level they were trying
@@ -3095,6 +3093,12 @@ export default function App() {
       document.removeEventListener("gesturestart", prevent);
       document.removeEventListener("gesturechange", prevent);
     };
+  }, []);
+
+  // One entry per calendar day the game is opened. The review prompt uses the
+  // count of distinct days as its "did they come back?" signal.
+  useEffect(() => {
+    recordPlayDay();
   }, []);
 
   // Hide the native splash only once the web fonts are ready. The splash shows
@@ -4913,25 +4917,9 @@ export default function App() {
         setShowSuccess(true);
         impactMedium();
 
-        // Review prompt triggers
-        if (!reviewPromptedRef.current) {
-          let shouldPrompt = false;
-          if (isProgress && progressLevelNumber === 50) {
-            shouldPrompt = true;
-          }
-          if (!isProgress) {
-            endlessSolvesRef.current += 1;
-            storage.setItem("zen_endless_solves", String(endlessSolvesRef.current));
-            if (endlessSolvesRef.current === 50) {
-              shouldPrompt = true;
-            }
-          }
-          if (shouldPrompt) {
-            reviewPromptedRef.current = true;
-            storage.setItem("zen_review_prompted", "true");
-            window.setTimeout(() => requestReview(), 1500);
-          }
-        }
+        // Counts the solve and asks for a review if this is one of the rare
+        // moments worth spending one of Apple's three yearly prompts on.
+        maybePromptForReview();
       }, successDelay);
     }
     if (!solved && prevSolvedRef.current) {
