@@ -1573,12 +1573,28 @@ body.perf-mode::before {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(12, 12, 12, 0.6);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
   border-radius: inherit;
   z-index: 2;
   animation: success-scrim 500ms ease-out both;
+}
+
+/* The dimming layer sits in its own child rather than on .success-overlay, so
+   it can be partly transparent without taking the card above it down with it.
+   It carries the active theme's own deepest background colour — every theme
+   sets --bg-end, the named ones in CSS and the colour themes at runtime — so a
+   board dims into its own palette. A neutral black wash turned the warm themes
+   to grey sludge and flattened the tile artwork into blank blocks, which is
+   most of the reason the level-complete moment read as broken. */
+.success-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--bg-end);
+  opacity: 0.72;
+  border-radius: inherit;
+  z-index: 0;
 }
 
 .success-stack {

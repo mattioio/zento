@@ -4,6 +4,7 @@ import { usePwaRegister } from "./pwaRegister.js";
 import { audioAttribution, audioTracks } from "./audioManifest.js";
 import bakedProgressionLevels from "./progressionLevels.json";
 import { storage } from "./storage.js";
+import { maybePromptForReview, notePaywallActivity, recordPlayDay } from "./reviewPrompt.js";
 import {
   ANALYTICS_CONSENT,
   getAnalyticsConsent,
@@ -20,7 +21,7 @@ import {
   getHasFullGame,
   setDevUnlock
 } from "./entitlements.js";
-import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, onAudioInterruption, onOtherAudioChange, openExternal, requestReview } from "./native.js";
+import { applyStatusBarForBackground, hideSplash, impactLight, impactMedium, isOtherAudioPlaying, onAppStateChange, onAudioInterruption, onOtherAudioChange, openExternal } from "./native.js";
 
 // --- Error Boundary ---
 export class ErrorBoundary extends React.Component {
@@ -1734,7 +1735,10 @@ function ThemePanel({
                   <path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                   <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
                 </svg>
-                <span>{priceString ? `Unlock all themes for ${priceString}` : "Unlock all themes"}</span>
+                {/* Says night modes, not "all themes": the purchase grants those
+                    outright, while the unlockable themes below are earned by
+                    reaching their level — which their own "Lvl 140" badges say. */}
+                <span>{priceString ? `Unlock night modes for ${priceString}` : "Unlock night modes"}</span>
               </button>
             </div>
           ) : null}
@@ -2238,7 +2242,7 @@ function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy, totalLevels }) 
           <p className="perf-note">
             {hasFullGame
               ? "You have the full game unlocked. Thank you."
-              : `Unlock all ${totalLevels} levels and themes.`}
+              : `Unlock all ${totalLevels} levels, night modes and harder endless modes.`}
           </p>
         </div>
         <div className="purchases-actions">
@@ -2878,11 +2882,6 @@ export default function App() {
   const [paywallBusy, setPaywallBusy] = useState(false);
   const [paywallError, setPaywallError] = useState(null);
   const pendingContinueLevelRef = useRef(null);
-  const endlessSolvesRef = useRef((() => {
-    const raw = Number(storage.getItem("zen_endless_solves"));
-    return Number.isFinite(raw) ? raw : 0;
-  })());
-  const reviewPromptedRef = useRef(storage.getItem("zen_review_prompted") === "true");
   const initialRecentRandomThemes = useMemo(() => {
     try {
       const raw = storage.getItem("zen_recent_random_themes");
@@ -2970,6 +2969,7 @@ export default function App() {
     setDifficultySheetSource(null);
     setPaywallError(null);
     setShowPaywall(true);
+    notePaywallActivity();
     emitEvent("paywall_opened");
   };
   const handleSelectDifficulty = (tier) => {
@@ -3000,6 +3000,7 @@ export default function App() {
     if (paywallBusy) return;
     pendingContinueLevelRef.current = null;
     setShowPaywall(false);
+    notePaywallActivity();
   };
   // After a successful unlock that originated from a level gate ("Unlock to
   // keep playing"), drop the player straight into the level they were trying
@@ -3095,6 +3096,12 @@ export default function App() {
       document.removeEventListener("gesturestart", prevent);
       document.removeEventListener("gesturechange", prevent);
     };
+  }, []);
+
+  // One entry per calendar day the game is opened. The review prompt uses the
+  // count of distinct days as its "did they come back?" signal.
+  useEffect(() => {
+    recordPlayDay();
   }, []);
 
   // Hide the native splash only once the web fonts are ready. The splash shows
@@ -4621,17 +4628,6 @@ export default function App() {
     () => new Set(progressCompletedLevels),
     [progressCompletedLevels]
   );
-  const effectiveUnlockedThemes = useMemo(() => {
-    if (!hasFullGame) return progressCompletedSet;
-    const next = new Set(progressCompletedSet);
-    for (const theme of themes) {
-      if (theme.unlockable) {
-        const lvl = Number(theme.unlockLevel);
-        if (Number.isFinite(lvl)) next.add(lvl);
-      }
-    }
-    return next;
-  }, [hasFullGame, progressCompletedSet, themes]);
   const assignedCount = assignedLevels.length;
   const totalCells = ROWS * COLS;
   const maxBlankCells = Math.max(0, totalCells - MIN_TILES);
@@ -4683,7 +4679,11 @@ export default function App() {
     return themeUnlockMap.get(progressLevelNumber) || null;
   }, [progressLevelNumber, themeUnlockMap]);
   const progressSuccessTitle = progressLevelNumber ? `Level ${progressLevelNumber} complete` : "Level complete";
-  const finalSuccessTitle = "A Winner Is You";
+  // The last thing anyone sees after 200 levels. The difficulty tiers run
+  // Still -> Drift -> Ripple -> Wave -> Swell -> Tide, so the journey ends
+  // where it began; the tick and the confetti already say "complete", which
+  // leaves the words free to just be quiet.
+  const finalSuccessTitle = "Still water";
   const successTitle = showFinalSuccess
     ? finalSuccessTitle
     : isProgress
@@ -4913,25 +4913,9 @@ export default function App() {
         setShowSuccess(true);
         impactMedium();
 
-        // Review prompt triggers
-        if (!reviewPromptedRef.current) {
-          let shouldPrompt = false;
-          if (isProgress && progressLevelNumber === 50) {
-            shouldPrompt = true;
-          }
-          if (!isProgress) {
-            endlessSolvesRef.current += 1;
-            storage.setItem("zen_endless_solves", String(endlessSolvesRef.current));
-            if (endlessSolvesRef.current === 50) {
-              shouldPrompt = true;
-            }
-          }
-          if (shouldPrompt) {
-            reviewPromptedRef.current = true;
-            storage.setItem("zen_review_prompted", "true");
-            window.setTimeout(() => requestReview(), 1500);
-          }
-        }
+        // Counts the solve and asks for a review if this is one of the rare
+        // moments worth spending one of Apple's three yearly prompts on.
+        maybePromptForReview();
       }, successDelay);
     }
     if (!solved && prevSolvedRef.current) {
@@ -5003,6 +4987,12 @@ export default function App() {
   const selectFixedTheme = (index) => {
     impactLight();
     const theme = themes[index];
+    // Unlockable themes are earned by completing their level and nothing else.
+    // The purchase already gates progress mode, so it needs no second say here,
+    // and the picker's padlocks read the same progressCompletedSet this does —
+    // when the two disagreed, paid players saw ten unlocked themes whose taps
+    // silently did nothing. Night modes are the ones the purchase grants, and
+    // they are gated separately where they're rendered.
     if (theme?.unlockable) {
       const unlockLevel = Number(theme.unlockLevel);
       if (!Number.isFinite(unlockLevel) || !progressCompletedSet.has(unlockLevel)) {
@@ -5264,7 +5254,7 @@ export default function App() {
               themeMode={themeMode}
               themeIndex={themeIndex}
               themes={themes}
-              unlockedThemeLevels={effectiveUnlockedThemes}
+              unlockedThemeLevels={progressCompletedSet}
               hasFullGame={hasFullGame}
               priceString={priceString}
               onOpenPaywall={() => {
@@ -5542,7 +5532,7 @@ export default function App() {
               themeMode={themeMode}
               themeIndex={themeIndex}
               themes={themes}
-              unlockedThemeLevels={effectiveUnlockedThemes}
+              unlockedThemeLevels={progressCompletedSet}
               showThemePicker={showThemePicker}
               themePickerMounted={themePickerMounted}
               onTogglePicker={toggleThemePicker}
