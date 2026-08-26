@@ -4687,7 +4687,11 @@ export default function App() {
     return themeUnlockMap.get(progressLevelNumber) || null;
   }, [progressLevelNumber, themeUnlockMap]);
   const progressSuccessTitle = progressLevelNumber ? `Level ${progressLevelNumber} complete` : "Level complete";
-  const finalSuccessTitle = "A Winner Is You";
+  // The last thing anyone sees after 200 levels. The difficulty tiers run
+  // Still -> Drift -> Ripple -> Wave -> Swell -> Tide, so the journey ends
+  // where it began; the tick and the confetti already say "complete", which
+  // leaves the words free to just be quiet.
+  const finalSuccessTitle = "Still water";
   const successTitle = showFinalSuccess
     ? finalSuccessTitle
     : isProgress
