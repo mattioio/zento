@@ -4625,17 +4625,6 @@ export default function App() {
     () => new Set(progressCompletedLevels),
     [progressCompletedLevels]
   );
-  const effectiveUnlockedThemes = useMemo(() => {
-    if (!hasFullGame) return progressCompletedSet;
-    const next = new Set(progressCompletedSet);
-    for (const theme of themes) {
-      if (theme.unlockable) {
-        const lvl = Number(theme.unlockLevel);
-        if (Number.isFinite(lvl)) next.add(lvl);
-      }
-    }
-    return next;
-  }, [hasFullGame, progressCompletedSet, themes]);
   const assignedCount = assignedLevels.length;
   const totalCells = ROWS * COLS;
   const maxBlankCells = Math.max(0, totalCells - MIN_TILES);
@@ -4995,6 +4984,12 @@ export default function App() {
   const selectFixedTheme = (index) => {
     impactLight();
     const theme = themes[index];
+    // Unlockable themes are earned by completing their level and nothing else.
+    // The purchase already gates progress mode, so it needs no second say here,
+    // and the picker's padlocks read the same progressCompletedSet this does —
+    // when the two disagreed, paid players saw ten unlocked themes whose taps
+    // silently did nothing. Night modes are the ones the purchase grants, and
+    // they are gated separately where they're rendered.
     if (theme?.unlockable) {
       const unlockLevel = Number(theme.unlockLevel);
       if (!Number.isFinite(unlockLevel) || !progressCompletedSet.has(unlockLevel)) {
@@ -5256,7 +5251,7 @@ export default function App() {
               themeMode={themeMode}
               themeIndex={themeIndex}
               themes={themes}
-              unlockedThemeLevels={effectiveUnlockedThemes}
+              unlockedThemeLevels={progressCompletedSet}
               hasFullGame={hasFullGame}
               priceString={priceString}
               onOpenPaywall={() => {
@@ -5534,7 +5529,7 @@ export default function App() {
               themeMode={themeMode}
               themeIndex={themeIndex}
               themes={themes}
-              unlockedThemeLevels={effectiveUnlockedThemes}
+              unlockedThemeLevels={progressCompletedSet}
               showThemePicker={showThemePicker}
               themePickerMounted={themePickerMounted}
               onTogglePicker={toggleThemePicker}
