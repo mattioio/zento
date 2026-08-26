@@ -1735,7 +1735,10 @@ function ThemePanel({
                   <path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                   <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
                 </svg>
-                <span>{priceString ? `Unlock all themes for ${priceString}` : "Unlock all themes"}</span>
+                {/* Says night modes, not "all themes": the purchase grants those
+                    outright, while the unlockable themes below are earned by
+                    reaching their level — which their own "Lvl 140" badges say. */}
+                <span>{priceString ? `Unlock night modes for ${priceString}` : "Unlock night modes"}</span>
               </button>
             </div>
           ) : null}
@@ -2239,7 +2242,7 @@ function PurchasesCard({ hasFullGame, onUnlock, onRestore, busy, totalLevels }) 
           <p className="perf-note">
             {hasFullGame
               ? "You have the full game unlocked. Thank you."
-              : `Unlock all ${totalLevels} levels and themes.`}
+              : `Unlock all ${totalLevels} levels, night modes and harder endless modes.`}
           </p>
         </div>
         <div className="purchases-actions">
