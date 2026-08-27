@@ -11,40 +11,41 @@
 // shown on screen. Light-on-light keeps the screenshot as the focal point.
 export const SHOTS = [
   {
-    id: "01-home",
-    raw: "01-home.png",
+    id: "01-board",
+    raw: "01-board.png",
     headline: "A meditation\nin tiles.",
-    // Serene Garden (soft green theme)
-    gradient: ["#eaf3e0", "#c5dcbf"],
-    headlineColor: "#1f3326",
+    // Warm Earth — a deep progression board, not the menu. Search results show
+    // the first shots, so lead with the game itself.
+    gradient: ["#fbf0d8", "#edd0a0"],
+    headlineColor: "#3a2615",
     tilt: 0,
     showLogo: true
   },
   {
-    id: "02-mid-game",
-    raw: "02-mid-game.png",
+    id: "02-board-blue",
+    raw: "02-board-blue.png",
     headline: "Find the path\nthrough the noise.",
-    // Rose Bloom (pink theme)
-    gradient: ["#fbe2e6", "#f0bccb"],
-    headlineColor: "#3a1d2a",
+    // Harbor Blue
+    gradient: ["#e9eff3", "#b9ccd8"],
+    headlineColor: "#1f2e38",
     tilt: 0
   },
   {
     id: "03-themes",
     raw: "03-themes.png",
     headline: "Pick a palette.\nOr let it shuffle.",
-    // Quiet Grey theme
-    gradient: ["#f1f1f1", "#cfcfcf"],
-    headlineColor: "#1f1f1f",
+    // Theme picker with the swatches and Shuffle visible
+    gradient: ["#f7f2ea", "#e2d6c4"],
+    headlineColor: "#3a2f22",
     tilt: 0
   },
   {
-    id: "04-progress",
-    raw: "04-progress.png",
+    id: "04-levels",
+    raw: "04-levels.png",
     headline: "Including a\n200-level journey.",
-    // Warm Earth (yellow/tan theme)
-    gradient: ["#fbf0d8", "#edd0a0"],
-    headlineColor: "#3a2615",
+    // The level grid at the frontier — three-figure numbers prove the depth
+    gradient: ["#eef2f5", "#c8d6df"],
+    headlineColor: "#22303a",
     tilt: 0
   },
   {
